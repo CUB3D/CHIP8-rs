@@ -1,3 +1,5 @@
+use std::time::{Instant, Duration};
+
 const CHIP8_DEFAULT_FONT: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
     0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -35,7 +37,6 @@ pub(crate) enum Register {
     VD,
     VE,
     VF,
-    I,
 }
 
 impl From<u8> for Register {
@@ -87,7 +88,6 @@ impl Register {
             Register::VD => 0xD,
             Register::VE => 0xE,
             Register::VF => 0xF,
-            Register::I => unimplemented!(),
         }
     }
 }
@@ -97,6 +97,9 @@ enum Instruction {
     Unknown,
     CallSub {
         address: u16,
+    },
+    SetI {
+        value: u16,
     },
     SetRegister {
         register: Register,
@@ -121,6 +124,9 @@ enum Instruction {
     },
     IncrementRegisterByRegister {
         dest: Register,
+        by: Register,
+    },
+    IncrementIByRegister {
         by: Register,
     },
     IncrementRegisterByImmediate {
@@ -152,6 +158,10 @@ enum Instruction {
         a: Register,
         b: Register,
     },
+    IfRegisterNeq {
+        a: Register,
+        b: Register,
+    },
     IfNeq {
         a: Register,
         b: u8,
@@ -170,8 +180,8 @@ enum Instruction {
         comp: Register,
     },
     SetRegisterRegister {
-        src: Register,
-        dest: Register,
+        a: Register,
+        b: Register,
     },
     BitwiseOr {
         a: Register,
@@ -198,6 +208,9 @@ enum Instruction {
     },
     ShiftLeft {
         a: Register,
+    },
+    IncrementPc {
+        offset: u16,
     },
 }
 
@@ -244,10 +257,7 @@ impl From<u16> for Instruction {
                 let reg_y = Register::from(y);
 
                 match n {
-                    0x0 => Instruction::SetRegisterRegister {
-                        src: reg_x,
-                        dest: reg_y,
-                    },
+                    0x0 => Instruction::SetRegisterRegister { a: reg_x, b: reg_y },
                     0x1 => Instruction::BitwiseOr { a: reg_x, b: reg_y },
                     0x2 => Instruction::BitwiseAnd { a: reg_x, b: reg_y },
                     0x3 => Instruction::BitwiseXor { a: reg_x, b: reg_y },
@@ -262,10 +272,12 @@ impl From<u16> for Instruction {
                     _ => Instruction::Unknown,
                 }
             }
-            0xA => Instruction::SetRegister {
-                register: Register::I,
-                value: nnn,
+            0x9 => Instruction::IfRegisterNeq {
+                a: Register::from(x),
+                b: Register::from(y),
             },
+            0xA => Instruction::SetI { value: nnn },
+            0xB => Instruction::IncrementPc { offset: nnn },
             0xC => Instruction::Rand {
                 dest: Register::from(x),
                 modulus: nn,
@@ -292,10 +304,7 @@ impl From<u16> for Instruction {
                     0x0A => Instruction::GetKey { dest: reg_x },
                     0x15 => Instruction::SetDelayTimer { value: reg_x },
                     0x18 => Instruction::SetSoundTimer { value: reg_x },
-                    0x1E => Instruction::IncrementRegisterByRegister {
-                        dest: Register::I,
-                        by: reg_x,
-                    },
+                    0x1E => Instruction::IncrementIByRegister { by: reg_x },
                     0x29 => Instruction::GetSpriteAddress { src: reg_x },
                     0x33 => Instruction::BCD { src: reg_x },
                     0x55 => Instruction::RegisterDump { dest: reg_x },
@@ -308,7 +317,7 @@ impl From<u16> for Instruction {
         };
 
         if Instruction::Unknown == ii {
-            println!("instruction {:x}", i);
+            panic!("Unknown instruction {:x}", i);
         }
 
         ii
@@ -325,13 +334,18 @@ pub(crate) const SCREEN_WIDTH: usize = 64;
 pub(crate) struct Emu {
     pub(crate) address_register: usize,
     pub(crate) program_counter: u16,
-    memory: [u8; 4096],
+    pub(crate) memory: [u8; 4096],
     pub(crate) registers: [u8; 16],
     pub(crate) stack: Vec<u16>,
     pub(crate) delay_timer: u8,
     pub(crate) sound_timer: u32,
-    pub(crate) screen_buffer: [u8; SCREEN_HEIGHT * SCREEN_WIDTH],
+    pub(crate) screen_buffer: [[u8; SCREEN_WIDTH]; SCREEN_HEIGHT],
     pub(crate) keys: [bool; 16],
+
+    fps_timer: Instant,
+    pub(crate) instructions_per_second: u32,
+    instructions: u32,
+
 }
 
 impl Emu {
@@ -351,8 +365,11 @@ impl Emu {
             stack: Vec::new(),
             delay_timer: 0,
             sound_timer: 0,
-            screen_buffer: [0; 64 * 32],
+            screen_buffer: [[0; SCREEN_WIDTH]; SCREEN_HEIGHT],
             keys: [false; 16],
+            fps_timer: Instant::now(),
+            instructions_per_second: 0,
+            instructions: 0,
         }
     }
 
@@ -383,13 +400,10 @@ impl Emu {
         let instruction = self.read_instruction();
         self.program_counter += 2;
 
+
         match instruction {
             Instruction::SetRegister { register, value } => {
-                if register == Register::I {
-                    self.address_register = value as usize;
-                } else {
-                    self.set_register(register, value as u8);
-                }
+                self.set_register(register, value as u8);
             }
             Instruction::CallSub { address } => {
                 self.stack.push(self.program_counter);
@@ -432,31 +446,37 @@ impl Emu {
                 let x = self.get_register(x) as usize;
                 let y = self.get_register(y) as usize;
 
-                self.set_register(Register::VF, 0);
+                let mut modified = 0;
 
                 for dy in 0..height as usize {
                     let line = self.memory[self.address_register + dy];
 
                     for dx in 0usize..8 {
                         let pixel = line & (0b_1000_0000 >> dx);
-                        let pos = (y + dy) * 64 + (x + dx);
 
-                        if pixel != 0 {
-                            let bit = 1 << (pos & 0b111);
+                        let current_pixel = self
+                            .screen_buffer
+                            .get_mut((y + dy) as usize)
+                            .and_then(|row| row.get_mut((x + dx) as usize));
 
-                            if self.screen_buffer[pos] & bit > 0 {
-                                self.set_register(Register::VF, 1);
+                        if let Some(current) = current_pixel {
+                            if pixel != 0 {
+                                if *current == 1 {
+                                    modified = 1;
+                                }
+                                *current ^= 1;
                             }
-                            self.screen_buffer[pos] ^= bit;
                         }
                     }
                 }
+
+                self.set_register(Register::VF, modified);
             }
             Instruction::GetSpriteAddress { src } => {
                 self.address_register = 432 + (self.get_register(src) as usize & 0xF) * 5;
             }
             Instruction::RegisterLoad { dest } => {
-                for i in 0..dest.value() {
+                for i in 0..=dest.value() {
                     self.registers[i as usize] = self.memory[self.address_register + i as usize];
                 }
 
@@ -475,8 +495,8 @@ impl Emu {
                     self.program_counter += 2;
                 }
             }
-            Instruction::SetRegisterRegister { dest, src } => {
-                self.set_register(dest, self.get_register(src));
+            Instruction::SetRegisterRegister { a, b } => {
+                self.set_register(a, self.get_register(b));
             }
             Instruction::BitwiseOr { a, b } => {
                 self.set_register(a, self.get_register(a) | self.get_register(b))
@@ -499,18 +519,67 @@ impl Emu {
             }
             Instruction::DecrementRegisterByRegister { a, b } => {
                 self.set_register(Register::VF, 1);
-                let (sum, overflow) = self.get_register(b).overflowing_sub(self.get_register(a));
+                let (sum, overflow) = self.get_register(a).overflowing_sub(self.get_register(b));
                 if overflow {
                     self.set_register(Register::VF, 0);
                 }
-                self.set_register(Register::VF, sum);
+                self.set_register(a, sum);
+            }
+            Instruction::ShiftRight { a } => {
+                self.set_register(Register::VF, self.get_register(a) & 0x01);
+                self.set_register(a, self.get_register(a) >> 1);
+            }
+            Instruction::Subtract { a, b } => {
+                self.set_register(Register::VF, 1);
+                let (sum, overflow) = self.get_register(a).overflowing_sub(self.get_register(b));
+                self.set_register(a, sum);
+                if overflow {
+                    self.set_register(Register::VF, 0);
+                }
+            }
+            Instruction::ShiftLeft { a } => {
+                self.set_register(Register::VF, self.get_register(a) & 0b1000);
+                self.set_register(a, self.get_register(a) << 1);
             }
             Instruction::Unknown => {
                 panic!("Unknown instruction")
             }
-            _ => {
-                println!("{:?}", instruction);
+            Instruction::SetI { value } => {
+                self.address_register = value as usize;
             }
+            Instruction::ClearDisplay => self.screen_buffer = [[0; SCREEN_WIDTH]; SCREEN_HEIGHT],
+            Instruction::RegisterDump { dest } => {
+                for i in 0..=dest.value() {
+                    self.memory[self.address_register + i as usize] = self.registers[i as usize];
+                }
+
+                self.address_register += dest.value() as usize + 1;
+            }
+            Instruction::IncrementIByRegister { by } => {
+                self.address_register += self.get_register(by) as usize;
+            }
+            Instruction::GetKey { dest } => {
+                if let Some((i, _k)) = self.keys.iter().enumerate().find(|(i, k)| **k) {
+                    self.set_register(dest, i as u8);
+                } else {
+                    // keep looping this instruction until we get a key
+                    self.program_counter -= 2;
+                }
+            }
+            Instruction::IfRegisterEq { a, b } => {
+                if self.get_register(a) == self.get_register(b) {
+                    self.program_counter += 2;
+                }
+            }
+            Instruction::IfRegisterNeq { a, b } => {
+                if self.get_register(a) != self.get_register(b) {
+                    self.program_counter += 2;
+                }
+            }
+            Instruction::IncrementPc { offset } => {
+                self.program_counter += self.get_register(Register::V0) as u16 + offset;
+            }
+            Instruction::CallRCA { .. } => panic!("RCA not implemented")
         }
     }
 
@@ -519,13 +588,23 @@ impl Emu {
             self.delay_timer -= 1;
         }
 
+        self.run_instruction();
+        self.instructions += 1;
+
+        if self.fps_timer.elapsed() > Duration::from_secs(1) {
+            self.fps_timer = Instant::now();
+            self.instructions_per_second = self.instructions;
+            self.instructions = 0;
+        }
+    }
+
+    pub(crate) fn should_beep(&mut self) -> bool {
         if self.sound_timer > 0 {
             self.sound_timer -= 1;
             if self.sound_timer == 0 {
-                println!("BEEP");
+                return true;
             }
         }
-
-        self.run_instruction();
+        false
     }
 }
