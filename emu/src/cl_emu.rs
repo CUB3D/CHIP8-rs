@@ -141,6 +141,9 @@ impl JIT {
         code
     }
 
+    /// Translate a list of instructions into cranelift ir for execution,
+    /// TODO: currently doesn't use the current state of registers so results won't be correct
+    ///  However it also doesn't extract the final state either so in effect this is the same as skipping the function execution when invoked from the emulator
     fn translate(&mut self, instructions: Vec<Instruction>) {
         //TODO: this should be 16 bit
         let byte = Type::int(8).unwrap();
