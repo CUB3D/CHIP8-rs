@@ -1,4 +1,5 @@
 /target
-rom
+desktop/rom
 *.iml
 .idea
+Chip8Assembler

@@ -1,18 +1,16 @@
-use crate::emu::{Emu, PlatformBackend};
 use crate::emu_ui::EmuUi;
 use crate::ui::{init, System};
+use emu::emu::Emu;
 use glium::glutin::event::VirtualKeyCode;
+use include_dir::{include_dir, Dir};
 use rodio::Source;
 use std::io::Cursor;
-use include_dir::{include_dir, Dir};
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
-pub mod emu;
 pub mod emu_ui;
 pub mod ui;
 
 const ROM_DIR: Dir = include_dir!("rom");
-
 
 fn main() {
     let system = init(file!());
@@ -25,7 +23,13 @@ fn main() {
 
     let mut tick_timer = Instant::now();
 
-    emu.load_rom(ROM_DIR.files().first().expect("No roms in rom dir").contents());
+    emu.load_rom(
+        ROM_DIR
+            .files()
+            .first()
+            .expect("No roms in rom dir")
+            .contents(),
+    );
 
     system.main_loop(move |_, ui| {
         let keys = ui.io().keys_down;
@@ -49,7 +53,6 @@ fn main() {
         ];
 
         emu_ui.draw(ui, &emu);
-
 
         if tick_timer.elapsed() > Duration::from_millis(1000 / 120) && emu_ui.run_step() {
             tick_timer = Instant::now();

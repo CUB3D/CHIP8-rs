@@ -1,4 +1,4 @@
-use crate::emu::{Emu, Register};
+use emu::emu::{Emu, Register, SCREEN_HEIGHT, SCREEN_WIDTH};
 use imgui::{im_str, Direction};
 use imgui::{Ui, Window};
 
@@ -11,7 +11,7 @@ pub(crate) struct EmuUi {
     playback_ui: bool,
     memory_ui: bool,
     stack_ui: bool,
-    new_rom: Option<Vec<u8>>
+    new_rom: Option<Vec<u8>>,
 }
 impl Default for EmuUi {
     fn default() -> Self {
@@ -32,9 +32,11 @@ impl EmuUi {
     pub(crate) fn draw(&mut self, ui: &Ui, emu: &Emu) {
         ui.main_menu_bar(|| {
             ui.menu(im_str!("File"), true, || {
-
                 for entry in crate::ROM_DIR.files() {
-                    if ui.checkbox(&im_str!("{}", entry.path().file_name().unwrap().to_string_lossy()), &mut false) {
+                    if ui.checkbox(
+                        &im_str!("{}", entry.path().file_name().unwrap().to_string_lossy()),
+                        &mut false,
+                    ) {
                         self.new_rom = Some(entry.contents().to_vec());
                     }
                 }
@@ -73,12 +75,11 @@ impl EmuUi {
         }
 
         Window::new(im_str!("Display")).build(ui, || {
-            for y in 0..crate::emu::SCREEN_HEIGHT {
-                let text: String = (0..crate::emu::SCREEN_WIDTH).map(|x| emu.screen_buffer[y][x]).map(|pixel| if pixel == 0 {
-                    "."
-                } else {
-                    "#"
-                }).collect();
+            for y in 0..SCREEN_HEIGHT {
+                let text: String = (0..SCREEN_WIDTH)
+                    .map(|x| emu.screen_buffer[y][x])
+                    .map(|pixel| if pixel == 0 { "." } else { "#" })
+                    .collect();
                 ui.text(text);
             }
         });

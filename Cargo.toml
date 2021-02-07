@@ -1,21 +1,7 @@
-[package]
-name = "chip8"
-version = "0.1.0"
-authors = ["CUB3D <callumthom11@gmail.com>"]
-edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-clipboard = "0.5.0"
-glium = "0.29.0"
-image ="0.23.12"
-imgui = "0.7.0"
-imgui-glium-renderer = "0.7.0"
-imgui-winit-support ="0.7.0"
-rand = "0.8.3"
-include_dir = "0.6.0"
-rodio = "0.13.0"
-chrono = "0.4.19"
+[workspace]
+members = [
+    "emu",
+    "desktop"
+]
 
 

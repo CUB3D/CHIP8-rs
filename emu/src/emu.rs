@@ -1,4 +1,5 @@
-use std::time::{Instant, Duration};
+use crate::cl_emu::{JITManager, JIT};
+use std::time::{Duration, Instant};
 
 const CHIP8_DEFAULT_FONT: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -19,8 +20,8 @@ const CHIP8_DEFAULT_FONT: [u8; 80] = [
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
 
-#[derive(Debug, Eq, PartialOrd, PartialEq, Copy, Clone)]
-pub(crate) enum Register {
+#[derive(Debug, Eq, PartialOrd, PartialEq, Copy, Clone, Hash)]
+pub enum Register {
     V0,
     V1,
     V2,
@@ -92,8 +93,8 @@ impl Register {
     }
 }
 
-#[derive(Debug, Eq, PartialOrd, PartialEq)]
-enum Instruction {
+#[derive(Debug, Eq, PartialOrd, PartialEq, Copy, Clone)]
+pub enum Instruction {
     Unknown,
     CallSub {
         address: u16,
@@ -328,39 +329,35 @@ pub trait PlatformBackend {
     fn is_key_pressed(&self, key: u8) -> bool;
 }
 
-pub(crate) const SCREEN_HEIGHT: usize = 32;
-pub(crate) const SCREEN_WIDTH: usize = 64;
+pub const SCREEN_HEIGHT: usize = 32;
+pub const SCREEN_WIDTH: usize = 64;
+pub const MEMORY_SIZE: usize = 4096;
 
-pub(crate) struct Emu {
-    pub(crate) address_register: usize,
-    pub(crate) program_counter: u16,
-    pub(crate) memory: [u8; 4096],
-    pub(crate) registers: [u8; 16],
-    pub(crate) stack: Vec<u16>,
-    pub(crate) delay_timer: u8,
-    pub(crate) sound_timer: u32,
-    pub(crate) screen_buffer: [[u8; SCREEN_WIDTH]; SCREEN_HEIGHT],
-    pub(crate) keys: [bool; 16],
+pub struct Emu {
+    pub address_register: usize,
+    pub program_counter: u16,
+    pub memory: [u8; MEMORY_SIZE],
+    pub registers: [u8; 16],
+    pub stack: Vec<u16>,
+    pub delay_timer: u8,
+    pub sound_timer: u32,
+    pub screen_buffer: [[u8; SCREEN_WIDTH]; SCREEN_HEIGHT],
+    pub keys: [bool; 16],
+    pub halted: bool,
 
     fps_timer: Instant,
-    pub(crate) instructions_per_second: u32,
+    pub instructions_per_second: u32,
     instructions: u32,
 
+    pub(crate) jit: JITManager,
 }
 
 impl Emu {
-    pub(crate) fn new() -> Self {
-        let mut initial_memory = [0; 4096];
-        // copy the font into mem
-        let font_base = 432;
-        for i in 0..CHIP8_DEFAULT_FONT.len() {
-            initial_memory[font_base + i] = CHIP8_DEFAULT_FONT[i];
-        }
-
+    pub fn new() -> Self {
         Self {
             program_counter: 0x200,
             address_register: 0,
-            memory: initial_memory,
+            memory: Emu::initial_memory(),
             registers: [0; 16],
             stack: Vec::new(),
             delay_timer: 0,
@@ -370,18 +367,48 @@ impl Emu {
             fps_timer: Instant::now(),
             instructions_per_second: 0,
             instructions: 0,
+            halted: false,
+            jit: JITManager::default(),
         }
     }
 
-    pub(crate) fn load_rom(&mut self, data: &[u8]) {
+    fn initial_memory() -> [u8; 4096] {
+        let mut initial_memory = [0; MEMORY_SIZE];
+        // copy the font into mem
+        let font_base = 432;
+        for i in 0..CHIP8_DEFAULT_FONT.len() {
+            initial_memory[font_base + i] = CHIP8_DEFAULT_FONT[i];
+        }
+        initial_memory
+    }
+
+    pub fn reset(&mut self) {
+        self.halted = false;
+        self.instructions = 0;
+        self.instructions_per_second = 0;
+        self.fps_timer = Instant::now();
+        self.keys = [false; 16];
+        self.screen_buffer = [[0; SCREEN_WIDTH]; SCREEN_HEIGHT];
+        self.sound_timer = 0;
+        self.delay_timer = 0;
+        self.stack.clear();
+        self.registers = [0; 16];
+        self.memory = Emu::initial_memory();
+        self.address_register = 0;
+        self.program_counter = 0x200;
+        self.jit = JITManager::default();
+    }
+
+    pub fn load_rom(&mut self, data: &[u8]) {
+        self.reset();
         for i in 0..data.len() {
             self.memory[0x200 + i] = data[i];
         }
     }
 
-    fn read_instruction(&self) -> Instruction {
-        let ins = ((*self.memory.get(self.program_counter as usize).unwrap() as u16) << 8)
-            | (*self.memory.get(self.program_counter as usize + 1).unwrap() as u16);
+    pub(crate) fn read_instruction(address: u16, memory: &[u8; MEMORY_SIZE]) -> Instruction {
+        let ins = ((*memory.get(address as usize).unwrap() as u16) << 8)
+            | (*memory.get(address as usize + 1).unwrap() as u16);
         Instruction::from(ins)
     }
 
@@ -396,10 +423,9 @@ impl Emu {
         self.keys[key as usize]
     }
 
-    fn run_instruction(&mut self) {
-        let instruction = self.read_instruction();
+    pub fn run_instruction(&mut self) {
+        let instruction = Emu::read_instruction(self.program_counter, &self.memory);
         self.program_counter += 2;
-
 
         match instruction {
             Instruction::SetRegister { register, value } => {
@@ -407,7 +433,16 @@ impl Emu {
             }
             Instruction::CallSub { address } => {
                 self.stack.push(self.program_counter);
-                self.program_counter = address;
+
+                //TODO: this should be cached
+                let can_be_jit = self.jit.can_function_be_jitted(address, &self.memory);
+                if can_be_jit {
+                    self.program_counter = self.jit.call_function(address, &self.memory);
+                } else {
+                    self.program_counter = address;
+                }
+
+                // self.program_counter = address;
             }
             Instruction::BCD { src } => {
                 let v = self.get_register(src);
@@ -579,11 +614,13 @@ impl Emu {
             Instruction::IncrementPc { offset } => {
                 self.program_counter += self.get_register(Register::V0) as u16 + offset;
             }
-            Instruction::CallRCA { .. } => panic!("RCA not implemented")
+            Instruction::CallRCA { .. } => {
+                self.halted = true;
+            }
         }
     }
 
-    pub(crate) fn tick(&mut self) {
+    pub fn tick(&mut self) {
         if self.delay_timer > 0 {
             self.delay_timer -= 1;
         }
@@ -598,7 +635,7 @@ impl Emu {
         }
     }
 
-    pub(crate) fn should_beep(&mut self) -> bool {
+    pub fn should_beep(&mut self) -> bool {
         if self.sound_timer > 0 {
             self.sound_timer -= 1;
             if self.sound_timer == 0 {
