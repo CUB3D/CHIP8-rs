@@ -19,7 +19,6 @@ fn main() {
         e.jit.call_function(512, &e.memory);
     });
 
-
     let system = init(file!());
 
     let (stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
@@ -63,7 +62,7 @@ fn main() {
 
         if tick_timer.elapsed() > Duration::from_millis(1000 / 120) && emu_ui.run_step() {
             tick_timer = Instant::now();
-            emu.tick();
+            // emu.tick();
         }
 
         if emu.should_beep() {

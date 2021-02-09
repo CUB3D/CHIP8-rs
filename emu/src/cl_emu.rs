@@ -115,26 +115,48 @@ impl TrapSink for EmuTrap {
 }
 
 use lazy_static::lazy_static;
-use std::ops::Deref;
 use std::cell::RefCell;
+use std::ops::Deref;
 use std::sync::Mutex;
 
 lazy_static! {
-    pub static ref SCREEN_BUFFER: Mutex<[[u8; emu::SCREEN_WIDTH]; emu::SCREEN_HEIGHT]> = Mutex::new([[0; emu::SCREEN_WIDTH]; emu::SCREEN_HEIGHT]);
+    pub static ref SCREEN_BUFFER: Mutex<[[u8; emu::SCREEN_WIDTH]; emu::SCREEN_HEIGHT]> =
+        Mutex::new([[0; emu::SCREEN_WIDTH]; emu::SCREEN_HEIGHT]);
 }
 
-pub fn draw_func(x: u8, y: u8, height: u8) -> u8 {
-    SCREEN_BUFFER.lock().unwrap()[0] = [1; emu::SCREEN_WIDTH];
+lazy_static! {
+    pub static ref MEMORY: Mutex<[u8; emu::MEMORY_SIZE]> = Mutex::new([0; emu::MEMORY_SIZE]);
+}
 
-    println!("In native func {} {} {}", x, y, height);
+pub fn draw_func(address_register: u16, x: u8, y: u8, height: u8) -> u8 {
+    let mut sb = SCREEN_BUFFER.lock().unwrap();
 
-    // for y in 0..emu::SCREEN_HEIGHT {
-    //     let text: String = (0..emu::SCREEN_WIDTH)
-    //         .map(|x| SCREEN_BUFFER[y][x])
-    //         .map(|pixel| if pixel == 0 { "." } else { "#" })
-    //         .collect();
-    //     println!("{}", text);
-    // }
+    let memory = MEMORY.lock().unwrap();
+
+    let mut modified = 0;
+
+    for dy in 0..height as usize {
+        let line = memory[address_register as usize + dy];
+
+        for dx in 0usize..8 {
+            let pixel = line & (0b_1000_0000 >> dx);
+
+            let current_pixel = sb
+                .get_mut((y as usize + dy) as usize)
+                .and_then(|row| row.get_mut((x as usize + dx) as usize));
+
+            if let Some(current) = current_pixel {
+                if pixel != 0 {
+                    if *current == 1 {
+                        modified = 1;
+                    }
+                    *current ^= 1;
+                }
+            }
+        }
+    }
+
+    //TODO: return result for VF
 
     0
 }
@@ -174,6 +196,8 @@ impl Default for JIT {
 
 impl JIT {
     fn compile(&mut self, address: u16, memory: &[u8; emu::MEMORY_SIZE]) -> *const u8 {
+        *(MEMORY.lock().unwrap()) = *memory;
+
         let name = "main";
 
         self.translate(address, memory);
@@ -208,6 +232,7 @@ impl JIT {
 
         let draw_func = {
             let mut native_func_sig = self.module.make_signature();
+            native_func_sig.params.push(AbiParam::new(short));
             native_func_sig.params.push(AbiParam::new(byte));
             native_func_sig.params.push(AbiParam::new(byte));
             native_func_sig.params.push(AbiParam::new(byte));
@@ -404,6 +429,7 @@ impl<'a> InstructionTranslator<'a> {
                 let x_reg = *self.registers.get(&x).unwrap();
                 let y_reg = *self.registers.get(&y).unwrap();
 
+                let arg_address_reg = self.builder.use_var(*self.address_register);
                 let arg_x = self.builder.use_var(x_reg);
                 let arg_y = self.builder.use_var(y_reg);
                 let arg_h = self.builder.ins().iconst(self.byte, height as i64);
@@ -411,12 +437,65 @@ impl<'a> InstructionTranslator<'a> {
                 let ca = self
                     .builder
                     .ins()
-                    .call(self.draw_func, &[arg_x, arg_y, arg_h]);
+                    .call(self.draw_func, &[arg_address_reg, arg_x, arg_y, arg_h]);
 
                 let res = self.builder.inst_results(ca);
                 println!("Draw res count: {:?}", res.len());
 
                 // self.builder.ins().resumable_trap(TrapCode::Interrupt);
+            }
+            Instruction::IfNeq { b, a } => {
+                println!("IfNeq always true");
+            }
+            Instruction::IfEq { a, b } => {
+                println!("IfEq always true")
+            }
+            Instruction::IfRegisterEq { a, b } => {
+                println!("IfRegisterEq always true")
+            }
+            Instruction::IfRegisterNeq { a, b } => {
+                println!("IfRegisterNeq always true")
+            }
+            Instruction::CallSub { .. }
+            | Instruction::SetRegisterRegister { .. }
+            | Instruction::SetSoundTimer { .. }
+            | Instruction::SetDelayTimer { .. }
+            | Instruction::DecrementRegisterByRegister { .. }
+            | Instruction::ShiftLeft { .. }
+            | Instruction::ShiftRight { .. }
+            | Instruction::RegisterDump { .. }
+            | Instruction::RegisterLoad { .. } => {
+                println!("Stub!");
+            }
+            Instruction::BitwiseOr { a, b } => {
+                let a_reg = *self.registers.get(&a).unwrap();
+                let b_reg = *self.registers.get(&b).unwrap();
+
+                let a_val = self.builder.use_var(a_reg);
+                let b_val = self.builder.use_var(b_reg);
+
+                let res = self.builder.ins().bor(a_val, b_val);
+                self.builder.def_var(a_reg, res);
+            }
+            Instruction::BitwiseAnd { a, b } => {
+                let a_reg = *self.registers.get(&a).unwrap();
+                let b_reg = *self.registers.get(&b).unwrap();
+
+                let a_val = self.builder.use_var(a_reg);
+                let b_val = self.builder.use_var(b_reg);
+
+                let res = self.builder.ins().band(a_val, b_val);
+                self.builder.def_var(a_reg, res);
+            }
+            Instruction::BitwiseXor { a, b } => {
+                let a_reg = *self.registers.get(&a).unwrap();
+                let b_reg = *self.registers.get(&b).unwrap();
+
+                let a_val = self.builder.use_var(a_reg);
+                let b_val = self.builder.use_var(b_reg);
+
+                let res = self.builder.ins().bxor(a_val, b_val);
+                self.builder.def_var(a_reg, res);
             }
             _ => {
                 println!("Can't jit {:?}", ins);
