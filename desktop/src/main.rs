@@ -15,8 +15,13 @@ const ROM_DIR: Dir = include_dir!("rom");
 fn main() {
     let x = std::thread::spawn(|| {
         let mut e = Emu::new();
-        e.load_rom(include_bytes!("../../desktop/rom/test_opcode.ch8"));
-        e.jit.call_function(512, &e.memory);
+        // e.load_rom(include_bytes!("../../desktop/rom/test_opcode.ch8"));
+        // e.load_rom(include_bytes!("../../desktop/rom/test_big_addr_loop.ch8"));
+        // e.load_rom(include_bytes!("../../desktop/rom/pong2.ch8"));
+        e.load_rom(include_bytes!("../../desktop/rom/MISSILE.ch8"));
+        // e.load_rom(include_bytes!("../../desktop/rom/chip8-test-rom.ch8"));
+
+        e.jit.call_function_direct(512, &e.memory);
     });
 
     let system = init(file!());
@@ -57,6 +62,8 @@ fn main() {
             keys[VirtualKeyCode::C as usize],
             keys[VirtualKeyCode::V as usize],
         ];
+
+        *emu::cl_emu::KEYS.lock().unwrap() = emu.keys;
 
         emu_ui.draw(ui, &emu);
 

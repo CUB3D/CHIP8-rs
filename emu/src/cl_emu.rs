@@ -6,118 +6,21 @@ use cranelift::codegen::ir::{FuncRef, SourceLoc};
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataContext, Linkage, Module};
+use lazy_static::lazy_static;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::slice;
-
-#[derive(Default)]
-pub struct JITManager {
-    can_be_jitted: HashMap<u16, bool>,
-    jitted_functions: HashMap<u16, (*const u8, u16)>,
-    jit: JIT,
-}
-
-impl JITManager {
-    /// Compile a chip8 function at a given address to a native function using cranelift, returns (ptr_to_function, new_pc)
-    /// new_pc is the point where the emulator should resume normal interpreted execution (the new value for the program counter)
-    pub(crate) fn compile_function(&mut self, address: u16, memory: &[u8; emu::MEMORY_SIZE]) {
-        let func = self.jit.compile(address, memory);
-        self.jitted_functions.insert(address, (func, 0));
-    }
-
-    pub fn call_function(&mut self, address: u16, memory: &[u8; emu::MEMORY_SIZE]) -> u16 {
-        if !self.jitted_functions.contains_key(&address) {
-            self.compile_function(address, memory);
-        }
-
-        let (func, new_pc) = self.jitted_functions.get(&address).unwrap();
-        let code_fn = unsafe { mem::transmute::<_, fn() -> u32>(*func) };
-        let _ = code_fn();
-        *new_pc
-    }
-
-    pub(crate) fn call_function_direct(
-        &mut self,
-        address: u16,
-        memory: &[u8; emu::MEMORY_SIZE],
-    ) -> u32 {
-        if !self.jitted_functions.contains_key(&address) {
-            self.compile_function(address, memory);
-        }
-
-        let (func, new_pc) = self.jitted_functions.get(&address).unwrap();
-        let code_fn = unsafe { mem::transmute::<_, fn() -> u32>(*func) };
-        code_fn()
-    }
-
-    pub(crate) fn can_function_be_jitted(
-        &mut self,
-        address: u16,
-        memory: &[u8; emu::MEMORY_SIZE],
-    ) -> bool {
-        if let Some(x) = self.can_be_jitted.get(&address) {
-            return *x;
-        } else {
-            let mut address = address;
-            let mut res = true;
-            loop {
-                let ins = Emu::read_instruction(address, memory);
-                address += 2;
-
-                // Not really in scope for v1
-                if matches!(
-                    ins,
-                    Instruction::DrawSprite { .. }
-                        | Instruction::CallSub { .. }
-                        | Instruction::SetDelayTimer { .. }
-                        | Instruction::SetSoundTimer { .. }
-                        | Instruction::GetDelay { .. }
-                        | Instruction::IfKeyEq { .. }
-                        | Instruction::IfKeyNeq { .. }
-                        | Instruction::Unknown
-                        | Instruction::SetI { .. }
-                        | Instruction::ClearDisplay
-                        | Instruction::GetKey { .. }
-                ) {
-                    res = false;
-                    break;
-                }
-
-                // Can probably be done in future, needs support for modifying memory/non Vx registers
-                if matches!(
-                    ins,
-                    Instruction::BCD { .. }
-                        | Instruction::RegisterLoad { .. }
-                        | Instruction::RegisterDump { .. }
-                        | Instruction::IncrementIByRegister { .. }
-                        | Instruction::IncrementPc { .. }
-                ) {
-                    res = false;
-                    break;
-                }
-
-                if ins == Instruction::Return {
-                    break;
-                }
-            }
-            self.can_be_jitted.insert(address, res);
-
-            res
-        }
-    }
-}
+use std::sync::Mutex;
+use std::time::Duration;
 
 pub struct EmuTrap {}
 
 impl TrapSink for EmuTrap {
     fn trap(&mut self, _offset: CodeOffset, _srcloc: SourceLoc, _code: TrapCode) {
-        println!("Got a trap {} {} {}", _offset, _srcloc, _code);
+        // println!("Got a trap {} {} {}", _offset, _srcloc, _code);
     }
 }
-
-use lazy_static::lazy_static;
-use std::cell::RefCell;
-use std::ops::Deref;
-use std::sync::Mutex;
 
 lazy_static! {
     pub static ref SCREEN_BUFFER: Mutex<[[u8; emu::SCREEN_WIDTH]; emu::SCREEN_HEIGHT]> =
@@ -126,6 +29,10 @@ lazy_static! {
 
 lazy_static! {
     pub static ref MEMORY: Mutex<[u8; emu::MEMORY_SIZE]> = Mutex::new([0; emu::MEMORY_SIZE]);
+}
+
+lazy_static! {
+    pub static ref KEYS: Mutex<[bool; 16]> = Mutex::new([false; 16]);
 }
 
 pub fn draw_func(address_register: u16, x: u8, y: u8, height: u8) -> u8 {
@@ -156,9 +63,44 @@ pub fn draw_func(address_register: u16, x: u8, y: u8, height: u8) -> u8 {
         }
     }
 
-    //TODO: return result for VF
+    modified
+}
 
-    0
+pub fn rand(modulus: u8) -> u8 {
+    rand::random::<u8>() % modulus
+}
+
+pub fn memset(addr: u16, val: u8) {
+    MEMORY.lock().unwrap()[addr as usize] = val;
+}
+
+pub fn memread(addr: u16) -> u8 {
+    MEMORY.lock().unwrap()[addr as usize]
+}
+
+pub fn sleep() {
+    let tps = 500;
+    std::thread::sleep(Duration::from_millis(1000 / tps));
+}
+
+pub fn clear_display() {
+    *SCREEN_BUFFER.lock().unwrap() = [[0; emu::SCREEN_WIDTH]; emu::SCREEN_HEIGHT];
+}
+
+pub fn wait_for_key() -> u8 {
+    loop {
+        if let Some((i, _k)) = KEYS.lock().unwrap().iter().enumerate().find(|(i, k)| **k) {
+            return i as u8;
+        }
+    }
+}
+
+pub fn is_key_pressed(key: u8) -> u8 {
+    if KEYS.lock().unwrap()[key as usize] {
+        1
+    } else {
+        0
+    }
 }
 
 /// The basic JIT class.
@@ -183,7 +125,16 @@ pub struct JIT {
 impl Default for JIT {
     fn default() -> Self {
         let mut builder = JITBuilder::new(cranelift_module::default_libcall_names());
+
         builder.symbol("draw_native", draw_func as *const u8);
+        builder.symbol("rand_native", draw_func as *const u8);
+        builder.symbol("memset_native", memset as *const u8);
+        builder.symbol("memread_native", memread as *const u8);
+        builder.symbol("sleep_native", sleep as *const u8);
+        builder.symbol("clear_display_native", clear_display as *const u8);
+        builder.symbol("wait_for_key_native", wait_for_key as *const u8);
+        builder.symbol("is_key_pressed_native", is_key_pressed as *const u8);
+
         let module = JITModule::new(builder);
         Self {
             builder_context: FunctionBuilderContext::new(),
@@ -195,6 +146,14 @@ impl Default for JIT {
 }
 
 impl JIT {
+    pub fn call_function_direct(&mut self, address: u16, memory: &[u8; emu::MEMORY_SIZE]) -> u32 {
+        println!("Compiling");
+        let func = self.compile(address, memory);
+        println!("Compile done");
+        let code_fn = unsafe { mem::transmute::<_, fn() -> u32>(func) };
+        code_fn()
+    }
+
     fn compile(&mut self, address: u16, memory: &[u8; emu::MEMORY_SIZE]) -> *const u8 {
         *(MEMORY.lock().unwrap()) = *memory;
 
@@ -238,13 +197,107 @@ impl JIT {
             native_func_sig.params.push(AbiParam::new(byte));
 
             native_func_sig.returns.push(AbiParam::new(byte));
-            let native_func = self
+            let draw_func = self
                 .module
                 .declare_function("draw_native", Linkage::Import, &native_func_sig)
                 .unwrap();
             let native_func_ref = self
                 .module
-                .declare_func_in_func(native_func, &mut builder.func);
+                .declare_func_in_func(draw_func, &mut builder.func);
+            native_func_ref
+        };
+
+        let rand_func = {
+            let mut native_func_sig = self.module.make_signature();
+            native_func_sig.params.push(AbiParam::new(byte));
+
+            native_func_sig.returns.push(AbiParam::new(byte));
+            let rand_func = self
+                .module
+                .declare_function("rand_native", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self
+                .module
+                .declare_func_in_func(rand_func, &mut builder.func);
+            native_func_ref
+        };
+
+        let memset_func = {
+            let mut native_func_sig = self.module.make_signature();
+            native_func_sig.params.push(AbiParam::new(short));
+            native_func_sig.params.push(AbiParam::new(byte));
+
+            let memset_func = self
+                .module
+                .declare_function("memset_native", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self
+                .module
+                .declare_func_in_func(memset_func, &mut builder.func);
+            native_func_ref
+        };
+
+        let memread_func = {
+            let mut native_func_sig = self.module.make_signature();
+            native_func_sig.params.push(AbiParam::new(short));
+
+            native_func_sig.returns.push(AbiParam::new(byte));
+
+            let memread_func = self
+                .module
+                .declare_function("memread_native", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self
+                .module
+                .declare_func_in_func(memread_func, &mut builder.func);
+            native_func_ref
+        };
+
+        let sleep_func = {
+            let mut native_func_sig = self.module.make_signature();
+
+            let func = self
+                .module
+                .declare_function("sleep_native", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self.module.declare_func_in_func(func, &mut builder.func);
+            native_func_ref
+        };
+
+        let clear_display_func = {
+            let mut native_func_sig = self.module.make_signature();
+
+            let func = self
+                .module
+                .declare_function("clear_display_func", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self.module.declare_func_in_func(func, &mut builder.func);
+            native_func_ref
+        };
+
+        let wait_for_key_func = {
+            let mut native_func_sig = self.module.make_signature();
+            native_func_sig.returns.push(AbiParam::new(byte));
+
+            let func = self
+                .module
+                .declare_function("wait_for_key_native", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self.module.declare_func_in_func(func, &mut builder.func);
+            native_func_ref
+        };
+
+        let is_key_pressed_func = {
+            let mut native_func_sig = self.module.make_signature();
+            native_func_sig.params.push(AbiParam::new(byte));
+
+            native_func_sig.returns.push(AbiParam::new(byte));
+
+            let func = self
+                .module
+                .declare_function("is_key_pressed_native", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self.module.declare_func_in_func(func, &mut builder.func);
             native_func_ref
         };
 
@@ -298,6 +351,18 @@ impl JIT {
             var
         };
 
+        let delay_timer = {
+            let var = Variable::new(17);
+            builder.declare_var(var, byte);
+            var
+        };
+
+        let sound_timer = {
+            let var = Variable::new(18);
+            builder.declare_var(var, byte);
+            var
+        };
+
         let mut blocks = HashMap::new();
 
         let mut trans = InstructionTranslator {
@@ -306,19 +371,30 @@ impl JIT {
             builder,
             registers: &register_map,
             address_register: &address_register,
+            delay_timer,
+            sound_timer,
             module: &mut self.module,
             memory,
             blocks: &mut blocks,
             draw_func,
+            rand_func,
+            memset_func,
+            memread_func,
+            sleep_func,
+            clear_display_func,
+            wait_for_key_func,
+            is_key_pressed_func,
+            stack: Vec::new(),
         };
 
         let mut new_address = address;
         loop {
-            let ins = Emu::read_instruction(new_address, memory);
-            new_address += 2;
-            if trans.translate_instruction(ins) {
+            let ins = Emu::read_instruction(new_address, memory).unwrap();
+            if trans.translate_instruction(ins, new_address) {
+                new_address += 2;
                 break;
             }
+            new_address += 2;
         }
 
         trans.builder.seal_all_blocks();
@@ -342,96 +418,246 @@ struct InstructionTranslator<'a> {
     memory: &'a [u8; emu::MEMORY_SIZE],
     blocks: &'a mut HashMap<u16, Block>,
     draw_func: FuncRef,
+    delay_timer: Variable,
+    sound_timer: Variable,
+    rand_func: FuncRef,
+    memset_func: FuncRef,
+    memread_func: FuncRef,
+    sleep_func: FuncRef,
+    clear_display_func: FuncRef,
+    wait_for_key_func: FuncRef,
+    is_key_pressed_func: FuncRef,
+    stack: Vec<u16>,
 }
 
 impl<'a> InstructionTranslator<'a> {
-    pub fn translate_instruction(&mut self, ins: Instruction) -> bool {
+    pub fn set_register(&mut self, reg: Register, value: Value) {
+        let var = *self.registers.get(&reg).unwrap();
+        self.builder.def_var(var, value);
+    }
+
+    pub fn get_register(&mut self, reg: Register) -> Value {
+        let var = *self.registers.get(&reg).unwrap();
+        self.builder.use_var(var)
+    }
+
+    pub fn memset(&mut self, mem_loc: Value, val: Value) {
+        let ca = self.builder.ins().call(self.memset_func, &[mem_loc, val]);
+
+        let res = self.builder.inst_results(ca);
+        assert_eq!(res.len(), 0);
+    }
+
+    pub fn memread(&mut self, mem_loc: Value) -> Value {
+        let ca = self.builder.ins().call(self.memread_func, &[mem_loc]);
+
+        let res = self.builder.inst_results(ca);
+        assert_eq!(res.len(), 1);
+
+        res[0]
+    }
+
+    pub fn sleep(&mut self) {
+        let ca = self.builder.ins().call(self.sleep_func, &[]);
+
+        let res = self.builder.inst_results(ca);
+        assert_eq!(res.len(), 0);
+    }
+
+    pub fn clear_display(&mut self) {
+        let ca = self.builder.ins().call(self.clear_display_func, &[]);
+
+        let res = self.builder.inst_results(ca);
+        assert_eq!(res.len(), 0);
+    }
+
+    pub fn wait_for_key(&mut self) -> Value {
+        let ca = self.builder.ins().call(self.wait_for_key_func, &[]);
+
+        let res = self.builder.inst_results(ca);
+        assert_eq!(res.len(), 1);
+
+        res[0]
+    }
+
+    pub fn is_key_pressed(&mut self, key_id: Value) -> Value {
+        let ca = self.builder.ins().call(self.is_key_pressed_func, &[key_id]);
+
+        let res = self.builder.inst_results(ca);
+        assert_eq!(res.len(), 1);
+
+        res[0]
+    }
+
+    pub fn dec_timers(&mut self) {
+        let one = self.builder.ins().iconst(self.byte, 1 as i64);
+
+        let delay_val = self.builder.use_var(self.delay_timer);
+        let new_delay = self.builder.ins().isub(delay_val, one);
+        self.builder.def_var(self.delay_timer, new_delay);
+
+        let sound_val = self.builder.use_var(self.sound_timer);
+        let new_sound = self.builder.ins().isub(sound_val, one);
+        self.builder.def_var(self.sound_timer, new_sound);
+
+        self.sleep();
+    }
+
+    pub fn translate_instruction(&mut self, ins: Instruction, pc: u16) -> bool {
         println!("Translating {:?}", ins);
+
+        // If this block is old then just use the existing one
+        let blk = self.blocks.get(&pc).copied();
+        if let Some(blk) = blk {
+            let new_blk = self.builder.create_block();
+            // println!("Using cached instruction block");
+            self.dec_timers();
+            self.builder.ins().jump(blk, &[]);
+            self.builder.switch_to_block(new_blk);
+
+            return true;
+        }
+
+        self.dec_timers();
+
+        // println!("Creating jump to new instruction block");
+        let blk = self.builder.create_block();
+        self.blocks.insert(pc, blk);
+        self.builder.ins().jump(blk, &[]);
+        self.builder.switch_to_block(blk);
+
         match ins {
-            Instruction::IncrementRegisterByImmediate { by, dest } => {
-                let var = *self.registers.get(&dest).unwrap();
-                let by_const = self.builder.ins().iconst(self.byte, by as i64);
-                let dest_value = self.builder.use_var(var);
-                let new_value = self.builder.ins().iadd(dest_value, by_const);
-                self.builder.def_var(var, new_value);
-            }
             Instruction::SetRegister { register, value } => {
                 let var = *self.registers.get(&register).unwrap();
                 let value_const = self.builder.ins().iconst(self.byte, value as i64);
                 self.builder.def_var(var, value_const);
             }
+            Instruction::IncrementRegisterByImmediate { by, dest } => {
+                let dest_val = self.get_register(dest);
+                let by_const = self.builder.ins().iconst(self.byte, by as i64);
+                let new_value = self.builder.ins().iadd(dest_val, by_const);
+                self.set_register(dest, new_value);
+            }
             Instruction::IncrementRegisterByRegister { dest, by } => {
-                let dest_var = *self.registers.get(&dest).unwrap();
-                let by_var = *self.registers.get(&by).unwrap();
+                let dest_val = self.get_register(dest);
+                let by_val = self.get_register(by);
 
-                let dest_value = self.builder.use_var(dest_var);
-                let by_value = self.builder.use_var(by_var);
+                // Do the addition in 64bit
+                let dest_val_sextend = self.builder.ins().sextend(types::I64, dest_val);
+                let by_val_sextend = self.builder.ins().sextend(types::I64, by_val);
+                let r = self.builder.ins().iadd(dest_val_sextend, by_val_sextend);
 
-                let new_value = self.builder.ins().iadd(dest_value, by_value);
-                self.builder.def_var(dest_var, new_value);
+                // Do the addition in 8 bit
+                let new_value = self.builder.ins().iadd(dest_val, by_val);
+
+                // If the numbers aren't equal then we overflowed in 8bit
+                let new_value_sextend = self.builder.ins().sextend(types::I64, new_value);
+                let overflow = self
+                    .builder
+                    .ins()
+                    .icmp(IntCC::NotEqual, r, new_value_sextend);
+                let one = self.builder.ins().iconst(types::I8, 1 as i64);
+                let zero = self.builder.ins().iconst(types::I8, 0 as i64);
+                let overflow_flag = self.builder.ins().select(overflow, one, zero);
+
+                self.set_register(dest, new_value);
+                self.set_register(Register::VF, overflow_flag);
+            }
+            Instruction::DecrementRegisterByRegister { a, b } => {
+                let dest_value = self.get_register(a);
+                let b_value = self.get_register(b);
+
+                let new_value = self.builder.ins().isub(dest_value, b_value);
+
+                let borrow = self
+                    .builder
+                    .ins()
+                    .icmp(IntCC::UnsignedLessThan, dest_value, b_value);
+
+                // Convert the borrow flag into a byte, 0 if there is no overflow and a 1 if there is
+                let one = self.builder.ins().iconst(self.byte, 1 as i64);
+                let zero = self.builder.ins().iconst(self.byte, 0 as i64);
+                let borrow_flag = self.builder.ins().select(borrow, zero, one);
+
+                self.set_register(a, new_value);
+                self.set_register(Register::VF, borrow_flag);
+            }
+            Instruction::SetRegisterRegister { a, b } => {
+                let b_value = self.get_register(b);
+                self.set_register(a, b_value);
             }
             Instruction::SetI { value } => {
                 let value_const = self.builder.ins().iconst(self.short, value as i64);
                 self.builder.def_var(*self.address_register, value_const);
             }
-            // Instruction::CallSub { address } => {
-            //     //TODO: push on stack
-            //     let current_block = self.builder.current_block().unwrap();
-            //     let blk = self.builder.create_block();
-            //     self.builder.ins().jump(blk, &[]);
-            //
-            //     self.builder.switch_to_block(blk);
-            //     self.builder.seal_block(blk);
-            //
-            //     let mut new_address = address;
-            //     loop {
-            //         let ins = Emu::read_instruction(new_address, self.memory);
-            //         new_address += 2;
-            //         self.translate_instruction(ins);
-            //     }
-            //
-            //     self.builder.switch_to_block(current_block);
-            // }
-            Instruction::Jmp { address } => {
-                //Have we already done this block
-                if let Some(blk) = self.blocks.get(&address) {
-                    self.builder.ins().jump(*blk, &[]);
-                } else {
-                    println!("Translating sub block jmp({})", address);
-                    let blk = self.builder.create_block();
-                    self.blocks.insert(address, blk);
-                    self.builder.ins().jump(blk, &[]);
+            Instruction::CallSub { address } => {
+                self.stack.push(pc + 2);
+                // println!("Translating sub block callsub({})", address);
 
-                    self.builder.switch_to_block(blk);
-
-                    let mut new_address = address;
-                    loop {
-                        let ins = Emu::read_instruction(new_address, self.memory);
-                        new_address += 2;
-                        if self.translate_instruction(ins) {
-                            break;
-                        }
+                let mut new_address = address;
+                loop {
+                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                    if ins == Instruction::Return {
+                        break;
                     }
-
-                    println!("Translating sub block jmp({}) done", address);
+                    if self.translate_instruction(ins, new_address) {
+                        println!("Found a terminating block before a return, ignoring, this might cause bugs");
+                    }
+                    new_address += 2;
                 }
+
+                // println!("Translating sub block callsub({}) done", address);
+            }
+            Instruction::Jmp { address } => {
+                // println!("Translating sub block jmp({})", address);
+
+                let mut new_address = address;
+                loop {
+                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                    if self.translate_instruction(ins, new_address) {
+                        new_address += 2;
+                        break;
+                    }
+                    new_address += 2;
+                }
+
+                // println!("Translating sub block jmp({}) done", address);
 
                 return true;
             }
             Instruction::Return => {
+                let new_pc = self.stack.pop().unwrap();
+
+                let mut new_address = new_pc;
+                loop {
+                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                    if self.translate_instruction(ins, new_address) {
+                        break;
+                    }
+                    new_address += 2;
+                }
+
                 return true;
             }
             Instruction::CallRCA { address } => {
-                // panic!();
+                panic!("CallRCA({}) not supported", address);
                 return true;
             }
+            Instruction::Rand { dest, modulus } => {
+                let mod_arg = self.builder.ins().iconst(self.byte, modulus as i64);
+
+                let ca = self.builder.ins().call(self.rand_func, &[mod_arg]);
+
+                let res = self.builder.inst_results(ca);
+                assert_eq!(res.len(), 1);
+
+                self.set_register(dest, res[0]);
+            }
             Instruction::DrawSprite { x, y, height } => {
-                let x_reg = *self.registers.get(&x).unwrap();
-                let y_reg = *self.registers.get(&y).unwrap();
+                let arg_x = self.get_register(x);
+                let arg_y = self.get_register(y);
 
                 let arg_address_reg = self.builder.use_var(*self.address_register);
-                let arg_x = self.builder.use_var(x_reg);
-                let arg_y = self.builder.use_var(y_reg);
                 let arg_h = self.builder.ins().iconst(self.byte, height as i64);
 
                 let ca = self
@@ -440,32 +666,162 @@ impl<'a> InstructionTranslator<'a> {
                     .call(self.draw_func, &[arg_address_reg, arg_x, arg_y, arg_h]);
 
                 let res = self.builder.inst_results(ca);
-                println!("Draw res count: {:?}", res.len());
+                assert_eq!(res.len(), 1);
 
-                // self.builder.ins().resumable_trap(TrapCode::Interrupt);
+                self.set_register(Register::VF, res[0]);
             }
             Instruction::IfNeq { b, a } => {
-                println!("IfNeq always true");
+                let true_block = self.builder.create_block();
+                let false_block = self.builder.create_block();
+
+                let a_val = self.get_register(a);
+                let b_val = self.builder.ins().iconst(self.byte, b as i64);
+
+                // If we are true then go to the true block
+                let cmp = self.builder.ins().icmp(IntCC::NotEqual, a_val, b_val);
+
+                // If we are true then go to the true block
+                self.builder.ins().brz(cmp, true_block, &[]); // Otherwise skip it and go to the true block
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(true_block);
+                self.translate_instruction(
+                    Emu::read_instruction(pc + 2, &self.memory).unwrap(),
+                    pc + 2,
+                );
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(false_block);
+                let mut new_address = pc + 4;
+                loop {
+                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                    if self.translate_instruction(ins, new_address) {
+                        new_address += 2;
+                        break;
+                    }
+                    new_address += 2;
+                }
+
+                return true;
             }
             Instruction::IfEq { a, b } => {
-                println!("IfEq always true")
+                let true_block = self.builder.create_block();
+                let false_block = self.builder.create_block();
+
+                let a_val = self.get_register(a);
+                let b_val = self.builder.ins().iconst(self.byte, b as i64);
+
+                // If we are true then go to the true block
+                let cmp = self.builder.ins().icmp(IntCC::Equal, a_val, b_val);
+
+                // If we are true then go to the true block
+                self.builder.ins().brz(cmp, true_block, &[]); // Otherwise skip it and go to the true block
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(true_block);
+                self.translate_instruction(
+                    Emu::read_instruction(pc + 2, &self.memory).unwrap(),
+                    pc + 2,
+                );
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(false_block);
+                let mut new_address = pc + 4;
+                loop {
+                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                    if self.translate_instruction(ins, new_address) {
+                        new_address += 2;
+                        break;
+                    }
+                    new_address += 2;
+                }
+
+                return true;
             }
             Instruction::IfRegisterEq { a, b } => {
-                println!("IfRegisterEq always true")
+                let true_block = self.builder.create_block();
+                let false_block = self.builder.create_block();
+
+                let a_val = self.get_register(a);
+                let b_val = self.get_register(b);
+
+                // If we are true then go to the true block
+                let cmp = self.builder.ins().icmp(IntCC::Equal, a_val, b_val);
+
+                // If we are true then go to the true block
+                self.builder.ins().brz(cmp, true_block, &[]); // Otherwise skip it and go to the true block
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(true_block);
+                self.translate_instruction(
+                    Emu::read_instruction(pc + 2, &self.memory).unwrap(),
+                    pc + 2,
+                );
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(false_block);
+                let mut new_address = pc + 4;
+                loop {
+                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                    if self.translate_instruction(ins, new_address) {
+                        new_address += 2;
+                        break;
+                    }
+                    new_address += 2;
+                }
+
+                return true;
             }
             Instruction::IfRegisterNeq { a, b } => {
-                println!("IfRegisterNeq always true")
+                let true_block = self.builder.create_block();
+                let false_block = self.builder.create_block();
+
+                let a_val = self.get_register(a);
+                let b_val = self.get_register(b);
+
+                // If we are true then go to the true block
+                let cmp = self.builder.ins().icmp(IntCC::NotEqual, a_val, b_val);
+
+                // If we are true then go to the true block
+                self.builder.ins().brz(cmp, true_block, &[]); // Otherwise skip it and go to the true block
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(true_block);
+                self.translate_instruction(
+                    Emu::read_instruction(pc + 2, &self.memory).unwrap(),
+                    pc + 2,
+                );
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(false_block);
+                let mut new_address = pc + 4;
+                loop {
+                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                    if self.translate_instruction(ins, new_address) {
+                        new_address += 2;
+                        break;
+                    }
+                    new_address += 2;
+                }
+
+                return true;
             }
-            Instruction::CallSub { .. }
-            | Instruction::SetRegisterRegister { .. }
-            | Instruction::SetSoundTimer { .. }
-            | Instruction::SetDelayTimer { .. }
-            | Instruction::DecrementRegisterByRegister { .. }
-            | Instruction::ShiftLeft { .. }
-            | Instruction::ShiftRight { .. }
-            | Instruction::RegisterDump { .. }
-            | Instruction::RegisterLoad { .. } => {
-                println!("Stub!");
+            Instruction::SetDelayTimer { value } => {
+                let a_reg = *self.registers.get(&value).unwrap();
+                let a_val = self.builder.use_var(a_reg);
+                self.builder.def_var(self.delay_timer, a_val);
+            }
+            Instruction::SetSoundTimer { value } => {
+                let a_reg = *self.registers.get(&value).unwrap();
+                let a_val = self.builder.use_var(a_reg);
+                self.builder.def_var(self.sound_timer, a_val);
+            }
+            Instruction::GetDelay { dest } => {
+                let dest_reg = *self.registers.get(&dest).unwrap();
+
+                let delay_val = self.builder.use_var(self.delay_timer);
+
+                self.builder.def_var(dest_reg, delay_val);
             }
             Instruction::BitwiseOr { a, b } => {
                 let a_reg = *self.registers.get(&a).unwrap();
@@ -497,30 +853,194 @@ impl<'a> InstructionTranslator<'a> {
                 let res = self.builder.ins().bxor(a_val, b_val);
                 self.builder.def_var(a_reg, res);
             }
-            _ => {
-                println!("Can't jit {:?}", ins);
-                // let r = self.builder.ins().iconst(self.byte, 0 as i64);
-                // self.builder.ins().return_(&[r]);
+            Instruction::ShiftLeft { a } => {
+                let a_val = self.get_register(a);
+                let high_bit = self.builder.ins().band_imm(a_val, 0b10000);
+
+                let r = self.builder.ins().ishl_imm(a_val, 1);
+
+                self.set_register(a, r);
+                self.set_register(Register::VF, high_bit);
+            }
+            Instruction::ShiftRight { a } => {
+                let a_val = self.get_register(a);
+                let low_bit = self.builder.ins().band_imm(a_val, 0x01);
+
+                let r = self.builder.ins().ushr_imm(a_val, 1);
+
+                self.set_register(a, r);
+                self.set_register(Register::VF, low_bit);
+            }
+            Instruction::RegisterDump { dest } => {
+                for i in 0..=dest.value() {
+                    let address_val = self.builder.use_var(*self.address_register);
+                    let i_val = self.builder.ins().iconst(self.short, i as i64);
+                    let mem_loc = self.builder.ins().iadd(address_val, i_val);
+                    let r_val = self.get_register(Register::from(i));
+
+                    self.memset(mem_loc, r_val);
+                }
+
+                let new_addr = self
+                    .builder
+                    .ins()
+                    .iconst(self.short, dest.value() as i64 + 1);
+                self.builder.def_var(*self.address_register, new_addr);
+            }
+            Instruction::RegisterLoad { dest } => {
+                for i in 0..=dest.value() {
+                    let address_val = self.builder.use_var(*self.address_register);
+                    let i_val = self.builder.ins().iconst(self.short, i as i64);
+                    let mem_loc = self.builder.ins().iadd(address_val, i_val);
+                    let mem_val = self.memread(mem_loc);
+                    self.set_register(Register::from(i), mem_val);
+                }
+                let new_addr = self
+                    .builder
+                    .ins()
+                    .iconst(self.short, dest.value() as i64 + 1);
+                self.builder.def_var(*self.address_register, new_addr);
+            }
+            Instruction::BCD { src } => {
+                let v = self.get_register(src);
+
+                let hudreds = self.builder.ins().udiv_imm(v, 100);
+                let tens = {
+                    let div = self.builder.ins().udiv_imm(v, 10);
+                    self.builder.ins().urem_imm(div, 10)
+                };
+                let units = self.builder.ins().urem_imm(v, 10);
+
+                let address_val = self.builder.use_var(*self.address_register);
+                let address_val_offset_1 = self.builder.ins().iadd_imm(address_val, 1);
+                let address_val_offset_2 = self.builder.ins().iadd_imm(address_val, 2);
+
+                self.memset(address_val, hudreds);
+                self.memset(address_val_offset_1, tens);
+                self.memset(address_val_offset_2, units);
+            }
+            Instruction::ClearDisplay => {
+                self.clear_display();
+            }
+            Instruction::IncrementIByRegister { by } => {
+                let address_current = self.builder.use_var(*self.address_register);
+                let offset = self.get_register(by);
+                let offset_sign_extend = self.builder.ins().sextend(self.short, offset);
+                let new_address = self.builder.ins().iadd(address_current, offset_sign_extend);
+                self.builder.def_var(*self.address_register, new_address);
+            }
+            Instruction::GetKey { dest } => {
+                let key_code = self.wait_for_key();
+                self.set_register(dest, key_code);
+            }
+
+            Instruction::IfKeyEq { comp } => {
+                let true_block = self.builder.create_block();
+                let false_block = self.builder.create_block();
+
+                let key_id_val = self.get_register(comp);
+                let is_pressed = self.is_key_pressed(key_id_val);
+                let one = self.builder.ins().iconst(self.byte, 1 as i64);
+
+                // If we are true then go to the true block
+                let cmp = self.builder.ins().icmp(IntCC::Equal, is_pressed, one);
+
+                // If we are true then go to the true block
+                self.builder.ins().brz(cmp, true_block, &[]); // Otherwise skip it and go to the true block
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(true_block);
+                self.translate_instruction(
+                    Emu::read_instruction(pc + 2, &self.memory).unwrap(),
+                    pc + 2,
+                );
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(false_block);
+                let mut new_address = pc + 4;
+                loop {
+                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                    if self.translate_instruction(ins, new_address) {
+                        new_address += 2;
+                        break;
+                    }
+                    new_address += 2;
+                }
+
                 return true;
+            }
+            Instruction::IfKeyNeq { comp } => {
+                let true_block = self.builder.create_block();
+                let false_block = self.builder.create_block();
+
+                let key_id_val = self.get_register(comp);
+                let is_pressed = self.is_key_pressed(key_id_val);
+                let one = self.builder.ins().iconst(self.byte, 1 as i64);
+
+                // If we are true then go to the true block
+                let cmp = self.builder.ins().icmp(IntCC::NotEqual, is_pressed, one);
+
+                // If we are true then go to the true block
+                self.builder.ins().brz(cmp, true_block, &[]); // Otherwise skip it and go to the true block
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(true_block);
+                self.translate_instruction(
+                    Emu::read_instruction(pc + 2, &self.memory).unwrap(),
+                    pc + 2,
+                );
+                self.builder.ins().jump(false_block, &[]);
+
+                self.builder.switch_to_block(false_block);
+                let mut new_address = pc + 4;
+                loop {
+                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                    if self.translate_instruction(ins, new_address) {
+                        new_address += 2;
+                        break;
+                    }
+                    new_address += 2;
+                }
+
+                return true;
+            }
+            Instruction::IncrementPc { .. } => {
+                panic!("Cannot handle changing PC");
+            }
+            Instruction::GetSpriteAddress { src } => {
+                let src_val = self.get_register(src);
+                let src_val = self.builder.ins().sextend(self.short, src_val);
+                let src_val = self.builder.ins().band_imm(src_val, 0xF);
+                let src_val = self.builder.ins().imul_imm(src_val, 5);
+                let src_val = self.builder.ins().iadd_imm(src_val, 432);
+
+                self.builder.def_var(*self.address_register, src_val);
+            }
+            Instruction::Subtract { a, b } => {
+                let a_val = self.get_register(a);
+                let b_val = self.get_register(b);
+
+                let borrow = self
+                    .builder
+                    .ins()
+                    .icmp(IntCC::UnsignedLessThan, a_val, b_val);
+
+                // Convert the borrow flag into a byte, 0 if there is no overflow and a 1 if there is
+                let one = self.builder.ins().iconst(self.byte, 1 as i64);
+                let zero = self.builder.ins().iconst(self.byte, 0 as i64);
+                let borrow_flag = self.builder.ins().select(borrow, zero, one);
+
+                let r = self.builder.ins().isub(a_val, b_val);
+                self.set_register(a, r);
+                self.set_register(Register::VF, borrow_flag);
+            }
+            Instruction::Unknown => {
+                println!("Unknown instruction, emitting NOP")
             }
         }
 
         false
     }
-}
-
-#[test]
-pub fn jit_test_big_loop() {
-    let mut e = Emu::new();
-    e.load_rom(include_bytes!("../benches/test_big_loop.ch8"));
-    e.jit.call_function(512, &e.memory);
-}
-
-#[test]
-pub fn jit_test_opcode() {
-    let mut e = Emu::new();
-    e.load_rom(include_bytes!("../../desktop/rom/test_opcode.ch8"));
-    e.jit.call_function(512, &e.memory);
 }
 
 #[test]
@@ -538,10 +1058,3 @@ pub fn jit_test_jmp() {
     let r = e.jit.call_function_direct(512, &e.memory);
     assert_eq!(r, 3);
 }
-
-// #[test]
-// pub fn can_jit_addr_loop() {
-//     let mut e = Emu::new();
-//     e.load_rom(include_bytes!("../benches/test_big_addr_loop.ch8"));
-//     assert_eq!(true, e.jit.can_function_be_jitted(0x202, &e.memory));
-// }

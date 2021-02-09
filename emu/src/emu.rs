@@ -1,4 +1,4 @@
-use crate::cl_emu::{JITManager, JIT};
+use crate::cl_emu::JIT;
 use std::time::{Duration, Instant};
 
 const CHIP8_DEFAULT_FONT: [u8; 80] = [
@@ -71,7 +71,7 @@ impl From<Register> for usize {
 }
 
 impl Register {
-    fn value(&self) -> u8 {
+    pub(crate) fn value(&self) -> u8 {
         match self {
             Register::V0 => 0x0,
             Register::V1 => 0x1,
@@ -317,10 +317,6 @@ impl From<u16> for Instruction {
             _ => Instruction::Unknown,
         };
 
-        if Instruction::Unknown == ii {
-            panic!("Unknown instruction {:x}", i);
-        }
-
         ii
     }
 }
@@ -340,7 +336,7 @@ pub struct Emu {
     pub registers: [u8; 16],
     pub stack: Vec<u16>,
     pub delay_timer: u8,
-    pub sound_timer: u32,
+    pub sound_timer: u8,
     pub screen_buffer: [[u8; SCREEN_WIDTH]; SCREEN_HEIGHT],
     pub keys: [bool; 16],
     pub halted: bool,
@@ -349,7 +345,7 @@ pub struct Emu {
     pub instructions_per_second: u32,
     instructions: u32,
 
-    pub jit: JITManager,
+    pub jit: JIT,
 }
 
 impl Emu {
@@ -368,7 +364,7 @@ impl Emu {
             instructions_per_second: 0,
             instructions: 0,
             halted: false,
-            jit: JITManager::default(),
+            jit: JIT::default(),
         }
     }
 
@@ -396,7 +392,7 @@ impl Emu {
         self.memory = Emu::initial_memory();
         self.address_register = 0;
         self.program_counter = 0x200;
-        self.jit = JITManager::default();
+        self.jit = JIT::default();
     }
 
     pub fn load_rom(&mut self, data: &[u8]) {
@@ -406,10 +402,19 @@ impl Emu {
         }
     }
 
-    pub(crate) fn read_instruction(address: u16, memory: &[u8; MEMORY_SIZE]) -> Instruction {
-        let ins = ((*memory.get(address as usize).unwrap() as u16) << 8)
-            | (*memory.get(address as usize + 1).unwrap() as u16);
-        Instruction::from(ins)
+    pub(crate) fn read_instruction(
+        address: u16,
+        memory: &[u8; MEMORY_SIZE],
+    ) -> Option<Instruction> {
+        if let (Some(a), Some(b)) = (
+            memory.get(address as usize),
+            memory.get(address as usize + 1),
+        ) {
+            let ins = (*a as u16) << 8 | (*b as u16);
+            Some(Instruction::from(ins))
+        } else {
+            None
+        }
     }
 
     fn get_register(&self, reg: Register) -> u8 {
@@ -424,7 +429,8 @@ impl Emu {
     }
 
     pub fn run_instruction(&mut self) {
-        let instruction = Emu::read_instruction(self.program_counter, &self.memory);
+        let instruction = Emu::read_instruction(self.program_counter, &self.memory)
+            .expect("Unable to read instruction");
         self.program_counter += 2;
 
         match instruction {
@@ -433,14 +439,6 @@ impl Emu {
             }
             Instruction::CallSub { address } => {
                 self.stack.push(self.program_counter);
-
-                // //TODO: this should be cached
-                // let can_be_jit = self.jit.can_function_be_jitted(address, &self.memory);
-                // if can_be_jit {
-                //     self.program_counter = self.jit.call_function(address, &self.memory);
-                // } else {
-                //     self.program_counter = address;
-                // }
 
                 self.program_counter = address;
             }
@@ -461,7 +459,7 @@ impl Emu {
                 self.delay_timer = self.get_register(value);
             }
             Instruction::SetSoundTimer { value } => {
-                self.sound_timer = self.get_register(value) as u32;
+                self.sound_timer = self.get_register(value);
             }
             Instruction::GetDelay { dest } => self.set_register(dest, self.delay_timer),
             Instruction::IfEq { a, b } => {
