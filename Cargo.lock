@@ -908,6 +908,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "criterion",
+ "lazy_static",
  "rand",
 ]
 

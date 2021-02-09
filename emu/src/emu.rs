@@ -349,7 +349,7 @@ pub struct Emu {
     pub instructions_per_second: u32,
     instructions: u32,
 
-    pub(crate) jit: JITManager,
+    pub jit: JITManager,
 }
 
 impl Emu {
@@ -434,15 +434,15 @@ impl Emu {
             Instruction::CallSub { address } => {
                 self.stack.push(self.program_counter);
 
-                //TODO: this should be cached
-                let can_be_jit = self.jit.can_function_be_jitted(address, &self.memory);
-                if can_be_jit {
-                    self.program_counter = self.jit.call_function(address, &self.memory);
-                } else {
-                    self.program_counter = address;
-                }
+                // //TODO: this should be cached
+                // let can_be_jit = self.jit.can_function_be_jitted(address, &self.memory);
+                // if can_be_jit {
+                //     self.program_counter = self.jit.call_function(address, &self.memory);
+                // } else {
+                //     self.program_counter = address;
+                // }
 
-                // self.program_counter = address;
+                self.program_counter = address;
             }
             Instruction::BCD { src } => {
                 let v = self.get_register(src);

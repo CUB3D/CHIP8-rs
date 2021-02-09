@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::slice;
 
 #[derive(Default)]
-pub(crate) struct JITManager {
+pub struct JITManager {
     can_be_jitted: HashMap<u16, bool>,
     jitted_functions: HashMap<u16, (*const u8, u16)>,
     jit: JIT,
@@ -24,7 +24,7 @@ impl JITManager {
         self.jitted_functions.insert(address, (func, 0));
     }
 
-    pub(crate) fn call_function(&mut self, address: u16, memory: &[u8; emu::MEMORY_SIZE]) -> u16 {
+    pub fn call_function(&mut self, address: u16, memory: &[u8; emu::MEMORY_SIZE]) -> u16 {
         if !self.jitted_functions.contains_key(&address) {
             self.compile_function(address, memory);
         }
@@ -114,8 +114,28 @@ impl TrapSink for EmuTrap {
     }
 }
 
+use lazy_static::lazy_static;
+use std::ops::Deref;
+use std::cell::RefCell;
+use std::sync::Mutex;
+
+lazy_static! {
+    pub static ref SCREEN_BUFFER: Mutex<[[u8; emu::SCREEN_WIDTH]; emu::SCREEN_HEIGHT]> = Mutex::new([[0; emu::SCREEN_WIDTH]; emu::SCREEN_HEIGHT]);
+}
+
 pub fn draw_func(x: u8, y: u8, height: u8) -> u8 {
+    SCREEN_BUFFER.lock().unwrap()[0] = [1; emu::SCREEN_WIDTH];
+
     println!("In native func {} {} {}", x, y, height);
+
+    // for y in 0..emu::SCREEN_HEIGHT {
+    //     let text: String = (0..emu::SCREEN_WIDTH)
+    //         .map(|x| SCREEN_BUFFER[y][x])
+    //         .map(|pixel| if pixel == 0 { "." } else { "#" })
+    //         .collect();
+    //     println!("{}", text);
+    // }
+
     0
 }
 
@@ -264,7 +284,7 @@ impl JIT {
             module: &mut self.module,
             memory,
             blocks: &mut blocks,
-            draw_func: &draw_func,
+            draw_func,
         };
 
         let mut new_address = address;
@@ -296,7 +316,7 @@ struct InstructionTranslator<'a> {
     module: &'a mut JITModule,
     memory: &'a [u8; emu::MEMORY_SIZE],
     blocks: &'a mut HashMap<u16, Block>,
-    draw_func: &'a FuncRef,
+    draw_func: FuncRef,
 }
 
 impl<'a> InstructionTranslator<'a> {
@@ -391,16 +411,17 @@ impl<'a> InstructionTranslator<'a> {
                 let ca = self
                     .builder
                     .ins()
-                    .call(*self.draw_func, &[arg_x, arg_y, arg_h]);
+                    .call(self.draw_func, &[arg_x, arg_y, arg_h]);
 
                 let res = self.builder.inst_results(ca);
                 println!("Draw res count: {:?}", res.len());
 
                 // self.builder.ins().resumable_trap(TrapCode::Interrupt);
-                return true;
             }
             _ => {
-                panic!("Can't jit {:?}", ins);
+                println!("Can't jit {:?}", ins);
+                // let r = self.builder.ins().iconst(self.byte, 0 as i64);
+                // self.builder.ins().return_(&[r]);
                 return true;
             }
         }

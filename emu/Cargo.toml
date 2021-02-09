@@ -13,6 +13,8 @@ cranelift-frontend = "0.69.0"
 cranelift-jit = "0.69.0"
 cranelift-module = "0.69.0"
 
+lazy_static = "1.4.0"
+
 
 [[bench]]
 name = "benchmarks"

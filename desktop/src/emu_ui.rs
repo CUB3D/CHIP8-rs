@@ -1,6 +1,8 @@
 use emu::emu::{Emu, Register, SCREEN_HEIGHT, SCREEN_WIDTH};
 use imgui::{im_str, Direction};
 use imgui::{Ui, Window};
+use std::ops::Deref;
+use std::sync::Mutex;
 
 pub(crate) struct EmuUi {
     running: bool,
@@ -75,9 +77,11 @@ impl EmuUi {
         }
 
         Window::new(im_str!("Display")).build(ui, || {
+            let mut r = emu::cl_emu::SCREEN_BUFFER.lock().unwrap();
+
             for y in 0..SCREEN_HEIGHT {
                 let text: String = (0..SCREEN_WIDTH)
-                    .map(|x| emu.screen_buffer[y][x])
+                    .map(|x| r[y][x])
                     .map(|pixel| if pixel == 0 { "." } else { "#" })
                     .collect();
                 ui.text(text);

@@ -13,6 +13,13 @@ pub mod ui;
 const ROM_DIR: Dir = include_dir!("rom");
 
 fn main() {
+    let x = std::thread::spawn(|| {
+        let mut e = Emu::new();
+        e.load_rom(include_bytes!("../../desktop/rom/test_opcode.ch8"));
+        e.jit.call_function(512, &e.memory);
+    });
+
+
     let system = init(file!());
 
     let (stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
@@ -69,4 +76,6 @@ fn main() {
             emu.load_rom(&data);
         }
     });
+
+    x.join();
 }
