@@ -17,7 +17,7 @@ fn run_jit_emu() {
 
     let x = std::thread::spawn(|| {
         let mut e = Emu::new();
-        e.load_rom(include_bytes!("../../desktop/rom/breakout.ch8"));
+        e.load_rom(include_bytes!("../../desktop/rom/snake.ch8"));
         e.jit.call_function_direct(512, &e.memory);
     });
 
@@ -54,7 +54,7 @@ fn run_base_emu() {
             .contents(),
     );
 
-    emu.load_rom(include_bytes!("../../desktop/rom/pong2.ch8"));
+    emu.load_rom(include_bytes!("../../desktop/rom/snake.ch8"));
 
     system.main_loop(move |_, ui| {
         let keys = ui.io().keys_down;
@@ -82,7 +82,7 @@ fn run_base_emu() {
         emu_ui.draw(ui, &mut emu, false);
 
         let can_run =
-            tick_timer.elapsed() > Duration::from_millis(1000 / 120) && emu_ui.run_step(&emu);
+            tick_timer.elapsed() > Duration::from_millis(1000 / 500) && emu_ui.run_step(&emu);
         if can_run {
             tick_timer = Instant::now();
             emu.tick();
@@ -101,5 +101,7 @@ fn run_base_emu() {
 }
 
 fn main() {
-    run_base_emu();
+    // run_base_emu();
+    // run_jit_emu();
+    emu::treegen::mk_tree();
 }

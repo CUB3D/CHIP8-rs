@@ -1,13 +1,15 @@
 use std::collections::HashSet;
 use std::io::Write;
+use crate::emu::Instruction;
 
 type Nd = usize;
 type Ed<'a> = &'a (usize, usize);
 
 #[derive(Clone)]
 pub struct Node {
-    name: String,
-    id: usize,
+    pub(crate) name: String,
+    pub(crate) id: usize,
+    pub(crate) i: Instruction,
 }
 
 struct Graph {
@@ -46,7 +48,7 @@ impl<'a> dot::GraphWalk<'a, Nd, Ed<'a>> for Graph {
 
 pub struct GraphManager {
     nodes: Vec<Node>,
-    edges: Vec<(usize, usize)>,
+    pub edges: Vec<(usize, usize)>,
 }
 
 impl Default for GraphManager {
@@ -55,6 +57,7 @@ impl Default for GraphManager {
             nodes: vec![Node {
                 name: "Main".to_string(),
                 id: 0,
+                i: Instruction::Unknown
             }],
             edges: Vec::new(),
         }
@@ -62,6 +65,15 @@ impl Default for GraphManager {
 }
 
 impl GraphManager {
+    pub fn add_node_2(&mut self, node: Node) -> Node {
+        if let Some(n) = self.nodes.iter().find(|n| n.name == node.name) {
+            return n.clone();
+        }
+
+        self.nodes.push(node.clone());
+        node.clone()
+    }
+
     pub fn add_node(&mut self, t: String) -> Node {
         if let Some(n) = self.nodes.iter().find(|n| n.name == t) {
             return n.clone();
@@ -70,9 +82,14 @@ impl GraphManager {
         let n = Node {
             name: t,
             id: self.nodes.len(),
+            i: Instruction::Unknown
         };
         self.nodes.push(n.clone());
         n
+    }
+
+    pub fn next_node_id(&self) -> usize {
+        self.nodes.len()
     }
 
     pub fn parent(&self, nd: &Node) -> Node {
@@ -90,6 +107,12 @@ impl GraphManager {
     pub fn link(&mut self, nd1: &Node, nd2: &Node) {
         if !self.edges.contains(&(nd1.id, nd2.id)) {
             self.edges.push((nd1.id, nd2.id));
+        }
+    }
+
+    pub fn link2(&mut self, id1: usize, id2: usize) {
+        if !self.edges.contains(&(id1, id2)) {
+            self.edges.push((id1, id2));
         }
     }
 
