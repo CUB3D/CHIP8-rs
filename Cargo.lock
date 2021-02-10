@@ -867,6 +867,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "disas"
+version = "0.1.0"
+dependencies = [
+ "emu",
+]
+
+[[package]]
 name = "discard"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -886,6 +893,12 @@ checksum = "b11f15d1e3268f140f68d390637d5e76d849782d971ae7063e0da69fe9709a76"
 dependencies = [
  "libloading",
 ]
+
+[[package]]
+name = "dot"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a74b6c4d4a1cff5f454164363c16b72fa12463ca6b31f4b5f2035a65fa3d5906"
 
 [[package]]
 name = "downcast-rs"
@@ -908,8 +921,10 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "criterion",
+ "dot",
  "lazy_static",
  "rand",
+ "rodio",
 ]
 
 [[package]]

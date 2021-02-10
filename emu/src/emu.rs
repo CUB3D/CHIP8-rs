@@ -1,5 +1,7 @@
 use crate::cl_emu::JIT;
 use std::time::{Duration, Instant};
+use crate::graph::GraphManager;
+use std::fs::File;
 
 const CHIP8_DEFAULT_FONT: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -346,6 +348,10 @@ pub struct Emu {
     instructions: u32,
 
     pub jit: JIT,
+
+    debug: bool,
+
+    graph: GraphManager,
 }
 
 impl Emu {
@@ -365,6 +371,8 @@ impl Emu {
             instructions: 0,
             halted: false,
             jit: JIT::default(),
+            debug: false,
+            graph: GraphManager::default(),
         }
     }
 
@@ -402,10 +410,7 @@ impl Emu {
         }
     }
 
-    pub(crate) fn read_instruction(
-        address: u16,
-        memory: &[u8; MEMORY_SIZE],
-    ) -> Option<Instruction> {
+    pub fn read_instruction(address: u16, memory: &[u8; MEMORY_SIZE]) -> Option<Instruction> {
         if let (Some(a), Some(b)) = (
             memory.get(address as usize),
             memory.get(address as usize + 1),
@@ -428,10 +433,29 @@ impl Emu {
         self.keys[key as usize]
     }
 
+    /// Dump the current state of the emulator into a human readable format, also used for constructing test cases
+    pub fn dump_state(&self) -> String {
+        // format!("Registers: {:?} I: {}, PC: {}; DT: {}, ST: {}", self.registers, self.address_register, self.program_counter, self.delay_timer, self.sound_timer)
+        format!(
+            "Registers: {:?} PC: {}",
+            &self.registers, self.program_counter
+        )
+    }
+
     pub fn run_instruction(&mut self) {
         let instruction = Emu::read_instruction(self.program_counter, &self.memory)
             .expect("Unable to read instruction");
         self.program_counter += 2;
+
+        let this = self.graph.add_node(format!("{} - {:?}", self.program_counter, instruction));
+        self.graph.link(&self.graph.parent(&this), &this);
+
+        let mut f = File::create("example.dot").unwrap();
+        self.graph.render(&mut f);
+
+        // if self.debug {
+        // println!("Instruction: {:?}", instruction);
+        // }
 
         match instruction {
             Instruction::SetRegister { register, value } => {
@@ -516,7 +540,8 @@ impl Emu {
                 self.address_register += dest.value() as usize + 1;
             }
             Instruction::Rand { dest, modulus } => {
-                self.set_register(dest, rand::random::<u8>() % modulus)
+                let r = 42; //rand::random::<u8>();
+                self.set_register(dest, r % modulus)
             }
             Instruction::IfKeyEq { comp } => {
                 if self.is_key_pressed(self.get_register(comp)) {

@@ -7,12 +7,16 @@ use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataContext, Linkage, Module};
 use lazy_static::lazy_static;
+use rodio::{OutputStream, OutputStreamHandle, Source};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{Cursor, Write};
 use std::ops::Deref;
 use std::slice;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use crate::graph::*;
 
 pub struct EmuTrap {}
 
@@ -67,7 +71,8 @@ pub fn draw_func(address_register: u16, x: u8, y: u8, height: u8) -> u8 {
 }
 
 pub fn rand(modulus: u8) -> u8 {
-    rand::random::<u8>() % modulus
+    let r = 42; // rand::random::<u8>() ;
+    r % modulus
 }
 
 pub fn memset(addr: u16, val: u8) {
@@ -96,11 +101,45 @@ pub fn wait_for_key() -> u8 {
 }
 
 pub fn is_key_pressed(key: u8) -> u8 {
+    assert!(key < 16);
+
     if KEYS.lock().unwrap()[key as usize] {
         1
     } else {
         0
     }
+}
+
+pub fn play_sound() {
+    let (stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
+    let sound_bytes = include_bytes!("../../desktop/beep.wav");
+    let source = rodio::Decoder::new(Cursor::new(sound_bytes)).unwrap();
+    stream_handle.play_raw(source.convert_samples());
+}
+
+pub fn dump_state(
+    pc: u16,
+    r0: u8,
+    r1: u8,
+    r2: u8,
+    r3: u8,
+    r4: u8,
+    r5: u8,
+    r6: u8,
+    r7: u8,
+    r8: u8,
+    r9: u8,
+    r10: u8,
+    r11: u8,
+    r12: u8,
+    r13: u8,
+    r14: u8,
+    r15: u8,
+) {
+    let registers = &[
+        r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15,
+    ];
+    println!("Registers: {:?} PC: {}", registers, pc)
 }
 
 /// The basic JIT class.
@@ -134,6 +173,9 @@ impl Default for JIT {
         builder.symbol("clear_display_native", clear_display as *const u8);
         builder.symbol("wait_for_key_native", wait_for_key as *const u8);
         builder.symbol("is_key_pressed_native", is_key_pressed as *const u8);
+        builder.symbol("play_sound_native", play_sound as *const u8);
+
+        builder.symbol("dump_state", dump_state as *const u8);
 
         let module = JITModule::new(builder);
         Self {
@@ -301,6 +343,45 @@ impl JIT {
             native_func_ref
         };
 
+        let dump_state_func = {
+            let mut native_func_sig = self.module.make_signature();
+            native_func_sig.params.push(AbiParam::new(short));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+            native_func_sig.params.push(AbiParam::new(byte));
+
+            let func = self
+                .module
+                .declare_function("dump_state", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self.module.declare_func_in_func(func, &mut builder.func);
+            native_func_ref
+        };
+
+        let play_sound_native_func = {
+            let mut native_func_sig = self.module.make_signature();
+
+            let func = self
+                .module
+                .declare_function("play_sound_native", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self.module.declare_func_in_func(func, &mut builder.func);
+            native_func_ref
+        };
+
         // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
 
@@ -365,6 +446,8 @@ impl JIT {
 
         let mut blocks = HashMap::new();
 
+        let mut gm = GraphManager::default();
+
         let mut trans = InstructionTranslator {
             byte,
             short,
@@ -385,6 +468,9 @@ impl JIT {
             wait_for_key_func,
             is_key_pressed_func,
             stack: Vec::new(),
+            dump_state_func,
+            play_sound_native_func,
+            graph: &mut gm,
         };
 
         let mut new_address = address;
@@ -404,7 +490,10 @@ impl JIT {
             .use_var(*register_map.get(&Register::V1).unwrap());
         trans.builder.ins().return_(&[ret]);
 
+        let mut f = File::create("example-jit.dot").unwrap();
         trans.builder.finalize();
+
+        gm.render(&mut f);
     }
 }
 
@@ -427,7 +516,10 @@ struct InstructionTranslator<'a> {
     clear_display_func: FuncRef,
     wait_for_key_func: FuncRef,
     is_key_pressed_func: FuncRef,
+    play_sound_native_func: FuncRef,
     stack: Vec<u16>,
+    dump_state_func: FuncRef,
+    graph: &'a mut GraphManager,
 }
 
 impl<'a> InstructionTranslator<'a> {
@@ -489,21 +581,104 @@ impl<'a> InstructionTranslator<'a> {
         res[0]
     }
 
-    pub fn dec_timers(&mut self) {
+    pub fn play_sound(&mut self) {
+        let ca = self.builder.ins().call(self.play_sound_native_func, &[]);
+
+        let res = self.builder.inst_results(ca);
+        assert_eq!(res.len(), 0);
+    }
+
+    pub fn dec_delay_timer(&mut self) {
         let one = self.builder.ins().iconst(self.byte, 1 as i64);
 
         let delay_val = self.builder.use_var(self.delay_timer);
+
+        let true_block = self.builder.create_block();
+        let false_block = self.builder.create_block();
+
+        /*
+           if delay_val > 0 {
+               delay_val = delay_val - 1;
+           }
+        */
+        self.builder.ins().brnz(delay_val, true_block, &[]);
+        self.builder.ins().jump(false_block, &[]);
+        self.builder.switch_to_block(true_block);
         let new_delay = self.builder.ins().isub(delay_val, one);
         self.builder.def_var(self.delay_timer, new_delay);
+        self.builder.ins().jump(false_block, &[]);
+        self.builder.switch_to_block(false_block);
+    }
+
+    pub fn play_sound_if_timer_is_zero(&mut self) {
+        let true_block = self.builder.create_block();
+        let false_block = self.builder.create_block();
 
         let sound_val = self.builder.use_var(self.sound_timer);
+
+        /*
+           if sound_val == 0 {
+               play_sound();
+           }
+        */
+        self.builder.ins().brz(sound_val, true_block, &[]);
+        self.builder.ins().jump(false_block, &[]);
+        self.builder.switch_to_block(true_block);
+        self.play_sound();
+        self.builder.ins().jump(false_block, &[]);
+        self.builder.switch_to_block(false_block);
+    }
+
+    pub fn dec_sound_timer(&mut self) {
+        let one = self.builder.ins().iconst(self.byte, 1 as i64);
+
+        let sound_val = self.builder.use_var(self.sound_timer);
+
+        let true_block = self.builder.create_block();
+        let false_block = self.builder.create_block();
+
+        /*
+           if sound_val > 0 {
+               sound_val = sound_val - 1;
+           }
+        */
+
+        self.builder.ins().brnz(sound_val, true_block, &[]);
+        self.builder.ins().jump(false_block, &[]);
+        self.builder.switch_to_block(true_block);
         let new_sound = self.builder.ins().isub(sound_val, one);
         self.builder.def_var(self.sound_timer, new_sound);
+        self.builder.ins().jump(false_block, &[]);
+        self.builder.switch_to_block(false_block);
+    }
+
+    pub fn dec_timers(&mut self) {
+        self.dec_delay_timer();
+        self.dec_sound_timer();
 
         self.sleep();
     }
 
+    pub fn dump_state(&mut self, pc: u16) {
+        let pc = self.builder.ins().iconst(types::I16, pc as i64);
+
+        let mut args = vec![pc];
+
+        for x in 0..16 {
+            let r = self.get_register(Register::from(x));
+            args.push(r);
+        }
+
+        let ca = self.builder.ins().call(self.dump_state_func, &args);
+
+        let res = self.builder.inst_results(ca);
+        assert_eq!(res.len(), 0);
+    }
+
     pub fn translate_instruction(&mut self, ins: Instruction, pc: u16) -> bool {
+        let this_node = self.graph.add_node(format!("{}: {:?}", pc, ins));
+        self.graph.link(&self.graph.parent(&this_node), &this_node);
+
         println!("Translating {:?}", ins);
 
         // If this block is old then just use the existing one
@@ -511,12 +686,16 @@ impl<'a> InstructionTranslator<'a> {
         if let Some(blk) = blk {
             let new_blk = self.builder.create_block();
             // println!("Using cached instruction block");
+            self.dump_state(pc);
+
             self.dec_timers();
             self.builder.ins().jump(blk, &[]);
             self.builder.switch_to_block(new_blk);
 
             return true;
         }
+
+        self.dump_state(pc);
 
         self.dec_timers();
 
@@ -591,17 +770,18 @@ impl<'a> InstructionTranslator<'a> {
                 self.builder.def_var(*self.address_register, value_const);
             }
             Instruction::CallSub { address } => {
-                self.stack.push(pc + 2);
+                // self.stack.push(pc + 2);
                 // println!("Translating sub block callsub({})", address);
+
+                let true_node = self.graph.add_node(format!("{} - SUB", pc));
+                self.graph.link(&this_node, &true_node);
 
                 let mut new_address = address;
                 loop {
                     let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if ins == Instruction::Return {
-                        break;
-                    }
                     if self.translate_instruction(ins, new_address) {
                         println!("Found a terminating block before a return, ignoring, this might cause bugs");
+                        break;
                     }
                     new_address += 2;
                 }
@@ -626,22 +806,22 @@ impl<'a> InstructionTranslator<'a> {
                 return true;
             }
             Instruction::Return => {
-                let new_pc = self.stack.pop().unwrap();
+                // let new_pc = self.stack.pop().unwrap();
 
-                let mut new_address = new_pc;
-                loop {
-                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if self.translate_instruction(ins, new_address) {
-                        break;
-                    }
-                    new_address += 2;
-                }
+                // let mut new_address = new_pc;
+                // loop {
+                //     let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                //     if self.translate_instruction(ins, new_address) {
+                //         break;
+                //     }
+                //     new_address += 2;
+                // }
 
                 return true;
             }
             Instruction::CallRCA { address } => {
-                panic!("CallRCA({}) not supported", address);
                 return true;
+                // println!("CallRCA({}) not supported", address);
             }
             Instruction::Rand { dest, modulus } => {
                 let mod_arg = self.builder.ins().iconst(self.byte, modulus as i64);
@@ -719,6 +899,10 @@ impl<'a> InstructionTranslator<'a> {
                 self.builder.ins().jump(false_block, &[]);
 
                 self.builder.switch_to_block(true_block);
+
+                let true_node = self.graph.add_node(format!("{} - True", pc));
+                self.graph.link(&this_node, &true_node);
+
                 self.translate_instruction(
                     Emu::read_instruction(pc + 2, &self.memory).unwrap(),
                     pc + 2,
@@ -726,6 +910,12 @@ impl<'a> InstructionTranslator<'a> {
                 self.builder.ins().jump(false_block, &[]);
 
                 self.builder.switch_to_block(false_block);
+
+                let false_node = self.graph.add_node(format!("{} - False", pc));
+                self.graph.link(&this_node, &false_node);
+                self.graph
+                    .link(&self.graph.parent(&false_node), &false_node);
+
                 let mut new_address = pc + 4;
                 loop {
                     let ins = Emu::read_instruction(new_address, self.memory).unwrap();

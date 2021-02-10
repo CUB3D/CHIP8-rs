@@ -5,7 +5,6 @@ use std::ops::Deref;
 use std::sync::Mutex;
 
 pub(crate) struct EmuUi {
-    running: bool,
     step: bool,
     pub(crate) debug: bool,
 
@@ -18,7 +17,6 @@ pub(crate) struct EmuUi {
 impl Default for EmuUi {
     fn default() -> Self {
         Self {
-            running: true,
             step: false,
             debug: true,
             registers_ui: false,
@@ -31,7 +29,7 @@ impl Default for EmuUi {
 }
 
 impl EmuUi {
-    pub(crate) fn draw(&mut self, ui: &Ui, emu: &Emu) {
+    pub(crate) fn draw(&mut self, ui: &Ui, emu: &mut Emu, jit: bool) {
         ui.main_menu_bar(|| {
             ui.menu(im_str!("File"), true, || {
                 for entry in crate::ROM_DIR.files() {
@@ -77,20 +75,30 @@ impl EmuUi {
         }
 
         Window::new(im_str!("Display")).build(ui, || {
-            let mut r = emu::cl_emu::SCREEN_BUFFER.lock().unwrap();
+            if jit {
+                let mut r = emu::cl_emu::SCREEN_BUFFER.lock().unwrap();
 
-            for y in 0..SCREEN_HEIGHT {
-                let text: String = (0..SCREEN_WIDTH)
-                    .map(|x| r[y][x])
-                    .map(|pixel| if pixel == 0 { "." } else { "#" })
-                    .collect();
-                ui.text(text);
+                for y in 0..SCREEN_HEIGHT {
+                    let text: String = (0..SCREEN_WIDTH)
+                        .map(|x| r[y][x])
+                        .map(|pixel| if pixel == 0 { "." } else { "#" })
+                        .collect();
+                    ui.text(text);
+                }
+            } else {
+                for y in 0..SCREEN_HEIGHT {
+                    let text: String = (0..SCREEN_WIDTH)
+                        .map(|x| emu.screen_buffer[y][x])
+                        .map(|pixel| if pixel == 0 { "." } else { "#" })
+                        .collect();
+                    ui.text(text);
+                }
             }
         });
 
         if self.playback_ui {
             Window::new(im_str!("Playback Controls")).build(ui, || {
-                ui.checkbox(im_str!("Running"), &mut self.running);
+                ui.checkbox(im_str!("Halted"), &mut emu.halted);
                 if ui.arrow_button(im_str!("Step"), Direction::Right) {
                     self.step = true;
                 }
@@ -113,8 +121,8 @@ impl EmuUi {
         }
     }
 
-    pub(crate) fn run_step(&mut self) -> bool {
-        if self.running {
+    pub(crate) fn run_step(&mut self, emu: &Emu) -> bool {
+        if !emu.halted {
             return true;
         } else {
             if self.step {

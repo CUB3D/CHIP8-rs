@@ -12,18 +12,31 @@ pub mod ui;
 
 const ROM_DIR: Dir = include_dir!("rom");
 
-fn main() {
+
+fn run_jit_emu() {
+    let system = init(file!());
+
     let x = std::thread::spawn(|| {
         let mut e = Emu::new();
-        // e.load_rom(include_bytes!("../../desktop/rom/test_opcode.ch8"));
-        // e.load_rom(include_bytes!("../../desktop/rom/test_big_addr_loop.ch8"));
-        // e.load_rom(include_bytes!("../../desktop/rom/pong2.ch8"));
-        e.load_rom(include_bytes!("../../desktop/rom/MISSILE.ch8"));
-        // e.load_rom(include_bytes!("../../desktop/rom/chip8-test-rom.ch8"));
-
+        e.load_rom(include_bytes!("../../desktop/rom/breakout.ch8"));
         e.jit.call_function_direct(512, &e.memory);
     });
 
+    let mut emu = Emu::new();
+    let mut emu_ui = EmuUi::default();
+
+    system.main_loop(move |_, ui| {
+        let keys = ui.io().keys_down;
+
+        *emu::cl_emu::KEYS.lock().unwrap() = emu.keys;
+
+        emu_ui.draw(ui, &mut emu, true);
+    });
+
+    x.join();
+}
+
+fn run_base_emu() {
     let system = init(file!());
 
     let (stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
@@ -41,6 +54,8 @@ fn main() {
             .expect("No roms in rom dir")
             .contents(),
     );
+
+    emu.load_rom(include_bytes!("../../desktop/rom/pong2.ch8"));
 
     system.main_loop(move |_, ui| {
         let keys = ui.io().keys_down;
@@ -65,11 +80,13 @@ fn main() {
 
         *emu::cl_emu::KEYS.lock().unwrap() = emu.keys;
 
-        emu_ui.draw(ui, &emu);
+        emu_ui.draw(ui, &mut emu, false);
 
-        if tick_timer.elapsed() > Duration::from_millis(1000 / 120) && emu_ui.run_step() {
+        let can_run =
+            tick_timer.elapsed() > Duration::from_millis(1000 / 120) && emu_ui.run_step(&emu);
+        if can_run {
             tick_timer = Instant::now();
-            // emu.tick();
+            emu.tick();
         }
 
         if emu.should_beep() {
@@ -82,6 +99,8 @@ fn main() {
             emu.load_rom(&data);
         }
     });
+}
 
-    x.join();
+fn main() {
+    run_base_emu();
 }
