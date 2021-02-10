@@ -1,5 +1,6 @@
 use crate::emu;
 use crate::emu::{Emu, Instruction, Register};
+use crate::graph::*;
 use core::mem;
 use cranelift::codegen::binemit::{CodeOffset, NullTrapSink, TrapSink};
 use cranelift::codegen::ir::{FuncRef, SourceLoc};
@@ -16,7 +17,6 @@ use std::ops::Deref;
 use std::slice;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::graph::*;
 
 pub struct EmuTrap {}
 

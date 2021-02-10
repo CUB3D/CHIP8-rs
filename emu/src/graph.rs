@@ -1,5 +1,5 @@
-use std::io::Write;
 use std::collections::HashSet;
+use std::io::Write;
 
 type Nd = usize;
 type Ed<'a> = &'a (usize, usize);
@@ -101,6 +101,6 @@ impl GraphManager {
             },
             output,
         )
-            .unwrap()
+        .unwrap()
     }
 }

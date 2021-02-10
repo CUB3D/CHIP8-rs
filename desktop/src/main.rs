@@ -12,7 +12,6 @@ pub mod ui;
 
 const ROM_DIR: Dir = include_dir!("rom");
 
-
 fn run_jit_emu() {
     let system = init(file!());
 

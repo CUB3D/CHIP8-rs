@@ -1,7 +1,7 @@
 use crate::cl_emu::JIT;
-use std::time::{Duration, Instant};
 use crate::graph::GraphManager;
 use std::fs::File;
+use std::time::{Duration, Instant};
 
 const CHIP8_DEFAULT_FONT: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -447,7 +447,9 @@ impl Emu {
             .expect("Unable to read instruction");
         self.program_counter += 2;
 
-        let this = self.graph.add_node(format!("{} - {:?}", self.program_counter, instruction));
+        let this = self
+            .graph
+            .add_node(format!("{} - {:?}", self.program_counter, instruction));
         self.graph.link(&self.graph.parent(&this), &this);
 
         let mut f = File::create("example.dot").unwrap();
