@@ -8,6 +8,7 @@ type Ed<'a> = &'a (usize, usize);
 #[derive(Clone)]
 pub struct Node {
     pub(crate) name: String,
+    pub(crate) display_name: String,
     pub(crate) id: usize,
     pub(crate) i: Instruction,
 }
@@ -24,7 +25,7 @@ impl<'a> dot::Labeller<'a, Nd, Ed<'a>> for Graph {
         dot::Id::new(format!("N{}", n)).unwrap()
     }
     fn node_label<'b>(&'b self, n: &Nd) -> dot::LabelText<'b> {
-        dot::LabelText::LabelStr(self.nodes[*n].name.clone().into())
+        dot::LabelText::LabelStr(self.nodes[*n].display_name.clone().into())
     }
     fn edge_label<'b>(&'b self, _: &Ed) -> dot::LabelText<'b> {
         dot::LabelText::LabelStr("&sube;".into())
@@ -57,7 +58,8 @@ impl Default for GraphManager {
             nodes: vec![Node {
                 name: "Main".to_string(),
                 id: 0,
-                i: Instruction::Unknown
+                i: Instruction::Unknown,
+                display_name: "".to_string()
             }],
             edges: Vec::new(),
         }
@@ -81,6 +83,7 @@ impl GraphManager {
 
         let n = Node {
             name: t,
+            display_name: "".to_string(),
             id: self.nodes.len(),
             i: Instruction::Unknown
         };

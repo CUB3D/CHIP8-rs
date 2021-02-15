@@ -3,20 +3,21 @@ use crate::emu::{Emu, Instruction, Register};
 use crate::graph::*;
 use core::mem;
 use cranelift::codegen::binemit::{CodeOffset, NullTrapSink, TrapSink};
-use cranelift::codegen::ir::{FuncRef, SourceLoc};
+use cranelift::codegen::ir::{FuncRef, SourceLoc, Inst};
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataContext, Linkage, Module};
 use lazy_static::lazy_static;
 use rodio::{OutputStream, OutputStreamHandle, Source};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use std::fs::File;
 use std::io::{Cursor, Write};
 use std::ops::Deref;
 use std::slice;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use cranelift_frontend::Switch;
 
 pub struct EmuTrap {}
 
@@ -37,6 +38,18 @@ lazy_static! {
 
 lazy_static! {
     pub static ref KEYS: Mutex<[bool; 16]> = Mutex::new([false; 16]);
+}
+
+lazy_static! {
+    pub static ref STACK: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+}
+
+pub fn push(v: u16) {
+    STACK.lock().unwrap().push(v);
+}
+
+pub fn pop() -> u16 {
+    STACK.lock().unwrap().pop().unwrap()
 }
 
 pub fn draw_func(address_register: u16, x: u8, y: u8, height: u8) -> u8 {
@@ -175,6 +188,10 @@ impl Default for JIT {
         builder.symbol("is_key_pressed_native", is_key_pressed as *const u8);
         builder.symbol("play_sound_native", play_sound as *const u8);
 
+        builder.symbol("native_push", push as *const u8);
+        builder.symbol("native_pop", pop as *const u8);
+
+
         builder.symbol("dump_state", dump_state as *const u8);
 
         let module = JITModule::new(builder);
@@ -221,8 +238,7 @@ impl JIT {
     }
 
     /// Translate a list of instructions into cranelift ir for execution,
-    /// TODO: currently doesn't use the current state of registers so results won't be correct
-    ///  However it also doesn't extract the final state either so in effect this is the same as skipping the function execution when invoked from the emulator
+    // TODO: use a jump table for jmp/callsub and a real stack (possibilly proxy out to a native Vec for poc), also make pc a register so we can use it as an index in the jumptable to know which block to go to
     fn translate(&mut self, address: u16, memory: &[u8; emu::MEMORY_SIZE]) {
         let byte = Type::int(8).unwrap();
         let short = Type::int(16).unwrap();
@@ -382,6 +398,30 @@ impl JIT {
             native_func_ref
         };
 
+        let push_native_func = {
+            let mut native_func_sig = self.module.make_signature();
+            native_func_sig.params.push(AbiParam::new(short));
+
+            let func = self
+                .module
+                .declare_function("native_push", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self.module.declare_func_in_func(func, &mut builder.func);
+            native_func_ref
+        };
+
+        let pop_native_func = {
+            let mut native_func_sig = self.module.make_signature();
+            native_func_sig.returns.push(AbiParam::new(short));
+
+            let func = self
+                .module
+                .declare_function("native_pop", Linkage::Import, &native_func_sig)
+                .unwrap();
+            let native_func_ref = self.module.declare_func_in_func(func, &mut builder.func);
+            native_func_ref
+        };
+
         // Create the entry block, to start emitting code in.
         let entry_block = builder.create_block();
 
@@ -471,16 +511,53 @@ impl JIT {
             dump_state_func,
             play_sound_native_func,
             graph: &mut gm,
+            push_func,
         };
+
+        let mut blocks = BTreeMap::new();
+        let mut callsub_placeholders = Vec::new();
 
         let mut new_address = address;
         loop {
             let ins = Emu::read_instruction(new_address, memory).unwrap();
-            if trans.translate_instruction(ins, new_address) {
+            if trans.translate_instruction(ins, new_address, &mut blocks, &mut callsub_placeholders) {
                 new_address += 2;
                 break;
             }
             new_address += 2;
+        }
+
+        // Use the blocks map to create a jump table
+        let mut jtd = JumpTableData::new();
+        for (index, blk) in trans.blocks.iter() {
+            jtd.push_entry(*blk);
+        }
+
+        let jt = trans.builder.create_jump_table(jtd);
+
+        // Take all the callsub blocks and translate them into a push + jumptable lookup
+        for blk in callsub_placeholders {
+            trans.builder.switch_to_block(blk);
+
+            // Get the next pc
+            let (blk_pc, _) = trans.blocks.iter().find(|(pc, b)| **b == blk).unwrap();
+            let next_pc_imm = trans.builder.ins().iconst(short, *blk_pc + 2);
+            // Push the return address
+            trans.push(next_pc_imm);
+
+            // Jump to the block using the jump table
+            let instruction = Emu::read_instruction(*blk_pc, memory).unwrap();
+            assert_eq!(matches!(instruction, Instruction::CallSub { ..}), true);
+            if let (Instruction::CallSub { address }) = instruction {
+                // Find the position of the callsub address in the blocks table, this will be the same as its index in the jump table
+                let blk_pos = trans.blocks.iter().position(|(p, b)| *p == address).unwrap();
+                let blk_pos_val = trans.builder.ins().iconst(short, blk_pos);
+                // If this block is non existant (should panic from the unwraps above, go to self (loop))
+                let default_block = blk;
+                trans.builder.ins().br_table(blk_pos_val, default_block, jt);
+            } else {
+                panic!("This should be a callsub");
+            }
         }
 
         trans.builder.seal_all_blocks();
@@ -520,6 +597,7 @@ struct InstructionTranslator<'a> {
     stack: Vec<u16>,
     dump_state_func: FuncRef,
     graph: &'a mut GraphManager,
+    push_func: FuncRef,
 }
 
 impl<'a> InstructionTranslator<'a> {
@@ -531,6 +609,13 @@ impl<'a> InstructionTranslator<'a> {
     pub fn get_register(&mut self, reg: Register) -> Value {
         let var = *self.registers.get(&reg).unwrap();
         self.builder.use_var(var)
+    }
+
+    pub fn push(&mut self, val: Value) {
+        let ca = self.builder.ins().call(self.push_func, &[val]);
+
+        let res = self.builder.inst_results(ca);
+        assert_eq!(res.len(), 0);
     }
 
     pub fn memset(&mut self, mem_loc: Value, val: Value) {
@@ -675,7 +760,7 @@ impl<'a> InstructionTranslator<'a> {
         assert_eq!(res.len(), 0);
     }
 
-    pub fn translate_instruction(&mut self, ins: Instruction, pc: u16) -> bool {
+    pub fn translate_instruction(&mut self, ins: Instruction, pc: u16, blocks: &mut BTreeMap<u16, Block>, callsub_placeholder: &mut Vec<Block>) -> bool {
         let this_node = self.graph.add_node(format!("{}: {:?}", pc, ins));
         self.graph.link(&self.graph.parent(&this_node), &this_node);
 
@@ -772,14 +857,20 @@ impl<'a> InstructionTranslator<'a> {
             Instruction::CallSub { address } => {
                 // self.stack.push(pc + 2);
                 // println!("Translating sub block callsub({})", address);
+                builder.ins().nop();
+                callsub_placeholder.push(blk);
 
-                let true_node = self.graph.add_node(format!("{} - SUB", pc));
-                self.graph.link(&this_node, &true_node);
-
+                // let true_node = self.graph.add_node(format!("{} - SUB", pc));
+                // self.graph.link(&this_node, &true_node);
+                //
                 let mut new_address = address;
                 loop {
                     let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if self.translate_instruction(ins, new_address) {
+                    //TODO: we should indicate that this instruction shouldn't follow on from the current one, we only want to make sure the block is in the blocks table
+
+                    //tODO: should we do a pass over the whole binary and either encode
+                    // each instruction into a block or put it in a list to do in a second pass because it needs to be able to do jumps, then all jumps can use the jumptable and we don't need any of the hideous recursion or translate instruction loops
+                    if self.translate_instruction(ins, new_address, &mut switch_table) {
                         println!("Found a terminating block before a return, ignoring, this might cause bugs");
                         break;
                     }
@@ -794,7 +885,7 @@ impl<'a> InstructionTranslator<'a> {
                 let mut new_address = address;
                 loop {
                     let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if self.translate_instruction(ins, new_address) {
+                    if self.translate_instruction(ins, new_address, &mut blocks) {
                         new_address += 2;
                         break;
                     }
@@ -868,6 +959,7 @@ impl<'a> InstructionTranslator<'a> {
                 self.translate_instruction(
                     Emu::read_instruction(pc + 2, &self.memory).unwrap(),
                     pc + 2,
+                    &mut blocks
                 );
                 self.builder.ins().jump(false_block, &[]);
 
@@ -875,7 +967,7 @@ impl<'a> InstructionTranslator<'a> {
                 let mut new_address = pc + 4;
                 loop {
                     let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if self.translate_instruction(ins, new_address) {
+                    if self.translate_instruction(ins, new_address, &mut blocks) {
                         new_address += 2;
                         break;
                     }
@@ -906,6 +998,7 @@ impl<'a> InstructionTranslator<'a> {
                 self.translate_instruction(
                     Emu::read_instruction(pc + 2, &self.memory).unwrap(),
                     pc + 2,
+                    &mut blocks
                 );
                 self.builder.ins().jump(false_block, &[]);
 
@@ -919,7 +1012,7 @@ impl<'a> InstructionTranslator<'a> {
                 let mut new_address = pc + 4;
                 loop {
                     let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if self.translate_instruction(ins, new_address) {
+                    if self.translate_instruction(ins, new_address, &mut blocks) {
                         new_address += 2;
                         break;
                     }
@@ -946,6 +1039,7 @@ impl<'a> InstructionTranslator<'a> {
                 self.translate_instruction(
                     Emu::read_instruction(pc + 2, &self.memory).unwrap(),
                     pc + 2,
+                    &mut blocks
                 );
                 self.builder.ins().jump(false_block, &[]);
 
@@ -953,7 +1047,7 @@ impl<'a> InstructionTranslator<'a> {
                 let mut new_address = pc + 4;
                 loop {
                     let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if self.translate_instruction(ins, new_address) {
+                    if self.translate_instruction(ins, new_address, &mut blocks) {
                         new_address += 2;
                         break;
                     }
@@ -980,6 +1074,7 @@ impl<'a> InstructionTranslator<'a> {
                 self.translate_instruction(
                     Emu::read_instruction(pc + 2, &self.memory).unwrap(),
                     pc + 2,
+                    &mut blocks
                 );
                 self.builder.ins().jump(false_block, &[]);
 
@@ -987,7 +1082,7 @@ impl<'a> InstructionTranslator<'a> {
                 let mut new_address = pc + 4;
                 loop {
                     let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if self.translate_instruction(ins, new_address) {
+                    if self.translate_instruction(ins, new_address, &mut blocks) {
                         new_address += 2;
                         break;
                     }
@@ -1178,6 +1273,7 @@ impl<'a> InstructionTranslator<'a> {
                 self.translate_instruction(
                     Emu::read_instruction(pc + 2, &self.memory).unwrap(),
                     pc + 2,
+                    &mut blocks
                 );
                 self.builder.ins().jump(false_block, &[]);
 
@@ -1185,7 +1281,7 @@ impl<'a> InstructionTranslator<'a> {
                 let mut new_address = pc + 4;
                 loop {
                     let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if self.translate_instruction(ins, new_address) {
+                    if self.translate_instruction(ins, new_address, &mut blocks) {
                         new_address += 2;
                         break;
                     }

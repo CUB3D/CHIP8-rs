@@ -26,13 +26,20 @@ pub fn mk_tree() {
         if i == None {
             break;
         }
+        if visited.contains(&pc) {
+            let req_pc = pc_to_node.get(&_requester_pc).unwrap();
+            let pc_node = pc_to_node.get(&pc).unwrap();
+            gm.link2(*req_pc, *pc_node);
+            continue;
+        }
         visited.push(pc);
         let i = i.unwrap();
 
         let n = gm.add_node_2(Node {
             id: gm.next_node_id(),
             i: i.clone(),
-            name: format!("{} - {:?} ({})", pc, i, postfix)
+            display_name: format!("{} - {:?} ({})", pc, i, postfix),
+            name: format!("{} - {:?}", pc, i)
         });
         let requester_node = *pc_to_node.get(&_requester_pc).unwrap();
         gm.link2(requester_node, n.id);
@@ -55,258 +62,19 @@ pub fn mk_tree() {
                 unvisited.push((pc, address, "JMP".to_string()));
             }
             Instruction::CallSub { address } => {
-                stk.push(address);
+                stk.push(pc);
                 unvisited.push((pc, address, "CALLSUB".to_string()));
             }
             Instruction::Return => {
                 if let Some(a) = stk.pop() {
-                    unvisited.push((pc, a, "RET".to_string()));
+                    unvisited.push((pc, a + 2, "RET".to_string()));
                 }
             }
             _ => {
-                if visited.len() < 600 {
-                    unvisited.push((pc, pc + 2, "".to_string()))
-                }
+                unvisited.push((pc, pc + 2, "".to_string()));
             }
-            /*Instruction::IfRegisterNeq { a, b } => {
-                let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-                let false_node = gm.add_node_2(Node {
-                    id: gm.next_node_id(),
-                    i: ins_false,
-                    name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-                });
-                gm.link(&n, &false_node);
-                pc += 2;
-
-                let true_node = gm.add_node_2(Node {
-                    id: gm.next_node_id(),
-                    i: ins_false,
-                    name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-                });
-                gm.link(&n, &true_node);
-
-                pc += 2;
-            }
-            Instruction::IfKeyNeq { comp } => {
-                let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-                let false_node = gm.add_node_2(Node {
-                    id: gm.next_node_id(),
-                    i: ins_false,
-                    name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-                });
-                gm.link(&n, &false_node);
-                pc += 2;
-
-                let true_node = gm.add_node_2(Node {
-                    id: gm.next_node_id(),
-                    i: ins_false,
-                    name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-                });
-                gm.link(&n, &true_node);
-
-                pc += 2;
-            }
-            Instruction::IfEq { a, b } => {
-                let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-                let false_node = gm.add_node_2(Node {
-                    id: gm.next_node_id(),
-                    i: ins_false,
-                    name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-                });
-                gm.link(&n, &false_node);
-                pc += 2;
-
-                let true_node = gm.add_node_2(Node {
-                    id: gm.next_node_id(),
-                    i: ins_false,
-                    name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-                });
-                gm.link(&n, &true_node);
-
-                pc += 2;
-            }
-            Instruction::IfRegisterEq { a, b } => {
-                let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-                let false_node = gm.add_node_2(Node {
-                    id: gm.next_node_id(),
-                    i: ins_false,
-                    name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-                });
-                gm.link(&n, &false_node);
-                pc += 2;
-
-                let true_node = gm.add_node_2(Node {
-                    id: gm.next_node_id(),
-                    i: ins_false,
-                    name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-                });
-                gm.link(&n, &true_node);
-
-                pc += 2;
-            }
-            Instruction::IfKeyEq { comp } => {
-                let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-                let false_node = gm.add_node_2(Node {
-                    id: gm.next_node_id(),
-                    i: ins_false,
-                    name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-                });
-                gm.link(&n, &false_node);
-                pc += 2;
-
-                let true_node = gm.add_node_2(Node {
-                    id: gm.next_node_id(),
-                    i: ins_false,
-                    name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-                });
-                gm.link(&n, &true_node);
-
-                pc += 2;
-            }*/
         }
     }
-
-
-    // let mut pc = 0x200;
-    // while let Some(ins) = Emu::read_instruction(pc, &emu.memory) {
-    //     if visited_pc.contains(&pc) {
-    //         continue;
-    //     }
-    //
-    //     visited_pc.push(pc);
-    //
-    //     let n = gm.add_node_2(Node {
-    //         id: gm.next_node_id(),
-    //         i: ins,
-    //         name: format!("{} - {:?}", pc, ins)
-    //     });
-    //     gm.link(&gm.parent(&n), &n);
-    //
-    //
-    //     match ins {
-    //         Instruction::IfNeq { a, b } => {
-    //             let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-    //             let false_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &false_node);
-    //             pc += 2;
-    //
-    //             let true_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &true_node);
-    //
-    //             pc += 2;
-    //
-    //         }
-    //         Instruction::IfRegisterNeq { a, b } => {
-    //             let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-    //             let false_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &false_node);
-    //             pc += 2;
-    //
-    //             let true_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &true_node);
-    //
-    //             pc += 2;
-    //
-    //         }
-    //         Instruction::IfKeyNeq { comp} => {
-    //             let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-    //             let false_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &false_node);
-    //             pc += 2;
-    //
-    //             let true_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &true_node);
-    //
-    //             pc += 2;
-    //         }
-    //         Instruction::IfEq { a, b } => {
-    //             let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-    //             let false_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &false_node);
-    //             pc += 2;
-    //
-    //             let true_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &true_node);
-    //
-    //             pc += 2;
-    //         }
-    //         Instruction::IfRegisterEq { a, b } => {
-    //             let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-    //             let false_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &false_node);
-    //             pc += 2;
-    //
-    //             let true_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &true_node);
-    //
-    //             pc += 2;
-    //         }
-    //         Instruction::IfKeyEq { comp} => {
-    //             let ins_false = Emu::read_instruction(pc + 2, &emu.memory).unwrap();
-    //             let false_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (FALSE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &false_node);
-    //             pc += 2;
-    //
-    //             let true_node = gm.add_node_2(Node {
-    //                 id: gm.next_node_id(),
-    //                 i: ins_false,
-    //                 name: format!("{} - {:?} (TRUE)", pc + 2, ins_false)
-    //             });
-    //             gm.link(&n, &true_node);
-    //
-    //             pc += 2;
-    //         }
-    //         Instruction::Jmp { address } => {
-    //             pc = address - 2;
-    //         }
-    //         _ => {}
-    //     }
-    //     pc += 2;
-    // }
 
     let mut f = File::create("example-tree.dot").unwrap();
     gm.render(&mut f);
