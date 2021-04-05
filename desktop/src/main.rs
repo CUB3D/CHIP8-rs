@@ -1,5 +1,5 @@
 use crate::emu_ui::EmuUi;
-use crate::ui::{init, System};
+use crate::ui::{init};
 use emu::emu::Emu;
 use glium::glutin::event::VirtualKeyCode;
 use include_dir::{include_dir, Dir};
@@ -38,7 +38,7 @@ const ROM_DIR: Dir = include_dir!("rom");
 fn run_base_emu() {
     let system = init(file!());
 
-    let (stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
+    let (_stream, stream_handle) = rodio::OutputStream::try_default().unwrap();
     let sound_bytes = include_bytes!("../beep.wav");
 
     let mut emu = Emu::new();

@@ -1,24 +1,24 @@
-use crate::emu;
+
 use crate::emu::InstructionReference;
-use crate::emu::{Emu, Instruction, Register};
-use crate::graph::*;
+use crate::emu::{Instruction, Register};
+
 use core::mem;
-use cranelift::codegen::binemit::{CodeOffset, NullTrapSink, StackMap, StackMapSink, TrapSink};
+use cranelift::codegen::binemit::{CodeOffset, StackMap, StackMapSink, TrapSink};
 use cranelift::codegen::ir::{FuncRef, Inst, SourceLoc, ValueLabel};
 use cranelift::prelude::*;
-use cranelift_frontend::Switch;
+
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataContext, Linkage, Module};
-use lazy_static::lazy_static;
-use rodio::{OutputStream, OutputStreamHandle, Source};
-use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
-use std::fs::File;
-use std::io::{Cursor, Write};
-use std::ops::Deref;
-use std::slice;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+
+
+
+use std::collections::{HashMap};
+
+
+
+
+
+
 
 pub struct EmuTrap;
 impl TrapSink for EmuTrap {
@@ -343,10 +343,10 @@ impl<'a> InstructionTranslator<'a> {
         blk
     }
 
-    fn memset(&self, loc: Value, val: Value) {
+    fn memset(&self, _loc: Value, _val: Value) {
         unimplemented!()
     }
-    fn memread(&self, loc: Value) -> Value {
+    fn memread(&self, _loc: Value) -> Value {
         unimplemented!()
     }
 
@@ -515,14 +515,14 @@ impl<'a> InstructionTranslator<'a> {
                     let value_const = self.builder.ins().iconst(self.short, value as i64);
                     self.builder.def_var(*self.address_register, value_const);
                 }
-                Instruction::CallSub { address } => {
+                Instruction::CallSub { address: _ } => {
                     unimplemented!()
                 }
                 Instruction::Jmp { address } => {
                     let (_, blk) = self
                         .blocks
                         .iter()
-                        .find(|(bpc, blk)| *bpc == address)
+                        .find(|(bpc, _blk)| *bpc == address)
                         .expect("No target block for jmp");
                     self.builder.ins().jump(*blk, &[]);
                     let new_blk = self.new_block_for_pc(ins.pos);
@@ -531,10 +531,10 @@ impl<'a> InstructionTranslator<'a> {
                 Instruction::Return => {
                     unimplemented!()
                 }
-                Instruction::CallRCA { address } => {
+                Instruction::CallRCA { address: _ } => {
                     unimplemented!()
                 }
-                Instruction::Rand { dest, modulus } => {
+                Instruction::Rand { dest: _, modulus: _ } => {
                     // let mod_arg = self.builder.ins().iconst(self.byte, modulus as i64);
                     //
                     // let ca = self.builder.ins().call(self.rand_func, &[mod_arg]);
@@ -545,10 +545,10 @@ impl<'a> InstructionTranslator<'a> {
                     // self.set_register(dest, res[0]);
                     unimplemented!()
                 }
-                Instruction::DrawSprite { x, y, height } => {
+                Instruction::DrawSprite { x: _, y: _, height: _ } => {
                     unimplemented!()
                 }
-                Instruction::IfNeq { b, a } => {
+                Instruction::IfNeq { b: _, a: _ } => {
                     // let true_block = self.builder.create_block();
                     // let false_block = self.builder.create_block();
                     //
@@ -609,7 +609,7 @@ impl<'a> InstructionTranslator<'a> {
 
                     self.builder.switch_to_block(false_block);
                 }
-                Instruction::IfRegisterEq { a, b } => {
+                Instruction::IfRegisterEq { a: _, b: _ } => {
                     // let true_block = self.builder.create_block();
                     // let false_block = self.builder.create_block();
                     //
@@ -646,7 +646,7 @@ impl<'a> InstructionTranslator<'a> {
                     // return true;
                     unimplemented!()
                 }
-                Instruction::IfRegisterNeq { a, b } => {
+                Instruction::IfRegisterNeq { a: _, b: _ } => {
                     // let true_block = self.builder.create_block();
                     // let false_block = self.builder.create_block();
                     //
@@ -807,13 +807,13 @@ impl<'a> InstructionTranslator<'a> {
                     let new_address = self.builder.ins().iadd(address_current, offset_sign_extend);
                     self.builder.def_var(*self.address_register, new_address);
                 }
-                Instruction::GetKey { dest } => {
+                Instruction::GetKey { dest: _ } => {
                     // let key_code = self.wait_for_key();
                     // self.set_register(dest, key_code);
                     unimplemented!()
                 }
 
-                Instruction::IfKeyEq { comp } => {
+                Instruction::IfKeyEq { comp: _ } => {
                     /*let true_block = self.builder.create_block();
                     let false_block = self.builder.create_block();
 
@@ -851,7 +851,7 @@ impl<'a> InstructionTranslator<'a> {
                     return true;*/
                     unimplemented!()
                 }
-                Instruction::IfKeyNeq { comp } => {
+                Instruction::IfKeyNeq { comp: _ } => {
                     /*let true_block = self.builder.create_block();
                     let false_block = self.builder.create_block();
 

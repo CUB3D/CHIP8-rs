@@ -1,7 +1,7 @@
 use crate::graph::GraphManager;
 use crate::jit::{NativeFunction, JIT};
 use std::collections::HashMap;
-use std::fs::File;
+
 use std::ops::{Index, IndexMut};
 use std::slice::SliceIndex;
 use std::time::{Duration, Instant};
@@ -360,8 +360,8 @@ impl Block {
 
     fn can_be_jitted(&self) -> bool {
         !self.ops.iter().any(|i| {
-            matches!(i.op, Instruction::DrawSprite { height, x, y })
-                || matches!(i.op, Instruction::GetDelay { dest })
+            matches!(i.op, Instruction::DrawSprite { height: _, x: _, y: _ })
+                || matches!(i.op, Instruction::GetDelay { dest: _ })
                 || matches!(
                     i.op,
                     Instruction::IfKeyNeq { comp } | Instruction::IfKeyEq { comp }
@@ -436,7 +436,7 @@ impl Block {
             newblk.ops.push(i);
         }
 
-        for i in range.0..range.1 + 1 {
+        for _i in range.0..range.1 + 1 {
             self.ops.remove(range.0);
         }
 
@@ -909,7 +909,7 @@ impl Emu {
                 self.address_register += self.get_register(by) as usize;
             }
             Instruction::GetKey { dest } => {
-                if let Some((i, _k)) = self.keys.iter().enumerate().find(|(i, k)| **k) {
+                if let Some((i, _k)) = self.keys.iter().enumerate().find(|(_i, k)| **k) {
                     self.set_register(dest, i as u8);
                 } else {
                     // keep looping this instruction until we get a key

@@ -1,5 +1,5 @@
 use crate::emu::Instruction;
-use std::collections::HashSet;
+
 use std::io::Write;
 
 type Nd = usize;

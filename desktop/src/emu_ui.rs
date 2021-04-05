@@ -1,8 +1,8 @@
 use emu::emu::{Emu, Register, SCREEN_HEIGHT, SCREEN_WIDTH};
 use imgui::{im_str, Direction};
 use imgui::{Ui, Window};
-use std::ops::Deref;
-use std::sync::Mutex;
+
+
 
 pub(crate) struct EmuUi {
     step: bool,
