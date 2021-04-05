@@ -1,5 +1,5 @@
 use crate::emu_ui::EmuUi;
-use crate::ui::{init};
+use crate::ui::init;
 use emu::emu::Emu;
 use glium::glutin::event::VirtualKeyCode;
 use include_dir::{include_dir, Dir};

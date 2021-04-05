@@ -1,4 +1,3 @@
-
 use crate::emu::InstructionReference;
 use crate::emu::{Instruction, Register};
 
@@ -10,15 +9,7 @@ use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataContext, Linkage, Module};
 
-
-
-use std::collections::{HashMap};
-
-
-
-
-
-
+use std::collections::HashMap;
 
 pub struct EmuTrap;
 impl TrapSink for EmuTrap {
@@ -534,7 +525,10 @@ impl<'a> InstructionTranslator<'a> {
                 Instruction::CallRCA { address: _ } => {
                     unimplemented!()
                 }
-                Instruction::Rand { dest: _, modulus: _ } => {
+                Instruction::Rand {
+                    dest: _,
+                    modulus: _,
+                } => {
                     // let mod_arg = self.builder.ins().iconst(self.byte, modulus as i64);
                     //
                     // let ca = self.builder.ins().call(self.rand_func, &[mod_arg]);
@@ -545,7 +539,11 @@ impl<'a> InstructionTranslator<'a> {
                     // self.set_register(dest, res[0]);
                     unimplemented!()
                 }
-                Instruction::DrawSprite { x: _, y: _, height: _ } => {
+                Instruction::DrawSprite {
+                    x: _,
+                    y: _,
+                    height: _,
+                } => {
                     unimplemented!()
                 }
                 Instruction::IfNeq { b: _, a: _ } => {

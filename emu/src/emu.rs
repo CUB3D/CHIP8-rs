@@ -360,8 +360,14 @@ impl Block {
 
     fn can_be_jitted(&self) -> bool {
         !self.ops.iter().any(|i| {
-            matches!(i.op, Instruction::DrawSprite { height: _, x: _, y: _ })
-                || matches!(i.op, Instruction::GetDelay { dest: _ })
+            matches!(
+                i.op,
+                Instruction::DrawSprite {
+                    height: _,
+                    x: _,
+                    y: _
+                }
+            ) || matches!(i.op, Instruction::GetDelay { dest: _ })
                 || matches!(
                     i.op,
                     Instruction::IfKeyNeq { comp } | Instruction::IfKeyEq { comp }

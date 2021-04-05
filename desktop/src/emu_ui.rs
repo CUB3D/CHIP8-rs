@@ -2,8 +2,6 @@ use emu::emu::{Emu, Register, SCREEN_HEIGHT, SCREEN_WIDTH};
 use imgui::{im_str, Direction};
 use imgui::{Ui, Window};
 
-
-
 pub(crate) struct EmuUi {
     step: bool,
     pub(crate) debug: bool,
