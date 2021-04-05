@@ -1,8 +1,9 @@
 use crate::emu;
+use crate::emu::InstructionReference;
 use crate::emu::{Emu, Instruction, Register};
 use crate::graph::*;
 use core::mem;
-use cranelift::codegen::binemit::{CodeOffset, NullTrapSink, TrapSink, StackMapSink, StackMap};
+use cranelift::codegen::binemit::{CodeOffset, NullTrapSink, StackMap, StackMapSink, TrapSink};
 use cranelift::codegen::ir::{FuncRef, Inst, SourceLoc, ValueLabel};
 use cranelift::prelude::*;
 use cranelift_frontend::Switch;
@@ -18,7 +19,6 @@ use std::ops::Deref;
 use std::slice;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::emu::InstructionReference;
 
 pub struct EmuTrap;
 impl TrapSink for EmuTrap {
@@ -27,8 +27,7 @@ impl TrapSink for EmuTrap {
     }
 }
 impl StackMapSink for EmuTrap {
-    fn add_stack_map(&mut self, _: u32, _: StackMap) {
-    }
+    fn add_stack_map(&mut self, _: u32, _: StackMap) {}
 }
 
 pub fn dump_state(
@@ -71,7 +70,7 @@ impl NativeFunction {
         //println!("Input args={:?}", registers);
         let code_fn = unsafe { mem::transmute::<_, fn(RegisterSet) -> RegisterSet>(self.func) };
         let ret = code_fn(RegisterSet(registers));
-       // println!("Returned {:?}", ret);
+        // println!("Returned {:?}", ret);
         registers[1] = ret.0[0];
 
         registers
@@ -115,9 +114,14 @@ impl Default for JIT {
 
 impl JIT {
     pub fn compile_native(&mut self, ops: Vec<InstructionReference>) -> NativeFunction {
-        let name = format!("jit_from_{}_to_{}_{}", ops.first().unwrap().pos, ops.last().unwrap().pos, rand::random::<u8>());
+        let name = format!(
+            "jit_from_{}_to_{}_{}",
+            ops.first().unwrap().pos,
+            ops.last().unwrap().pos,
+            rand::random::<u8>()
+        );
         NativeFunction {
-            func: self.compile(ops, &name)
+            func: self.compile(ops, &name),
         }
     }
 
@@ -127,14 +131,13 @@ impl JIT {
         /*self.ctx.func.collect_debug_info();
         println!("{}", self.ctx.func.display(Some(self.module.isa())));*/
 
-
         let id = self
             .module
             .declare_function(name, Linkage::Export, &self.ctx.func.signature)
             .unwrap();
 
-        let mut trap = EmuTrap{};
-        let mut stack_trap = EmuTrap{};
+        let mut trap = EmuTrap {};
+        let mut stack_trap = EmuTrap {};
 
         self.module
             .define_function(id, &mut self.ctx, &mut trap, &mut stack_trap)
@@ -261,7 +264,9 @@ impl JIT {
         // the function's parameters.
         //
         // TODO: Streamline the API here.
-        trans.builder.append_block_params_for_function_params(entry_block);
+        trans
+            .builder
+            .append_block_params_for_function_params(entry_block);
 
         // Tell the builder to emit code in this block.
         trans.builder.switch_to_block(entry_block);
@@ -286,7 +291,6 @@ impl JIT {
 
         trans.builder.seal_all_blocks();
 
-
         // let return_vals = registers.iter().copied().map(|i| trans.get_register(i)).collect::<Vec<_>>();
 
         let return_vals = &[trans.get_register(Register::V1)];
@@ -306,13 +310,18 @@ struct InstructionTranslator<'a> {
     delay_timer: Variable,
     sound_timer: Variable,
     dump_state_func: FuncRef,
-    blocks: Vec<(u16, Block)>
+    blocks: Vec<(u16, Block)>,
 }
 
 impl<'a> InstructionTranslator<'a> {
     pub fn init_registers(&mut self, entry_block: Block) {
         // Get the args to the function, set each register to the correct val
-        let args = self.builder.block_params(entry_block).iter().copied().collect::<Vec<_>>();
+        let args = self
+            .builder
+            .block_params(entry_block)
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
         for i in 0..16 {
             self.set_register(Register::from(i), args[i as usize]);
         }
@@ -334,11 +343,19 @@ impl<'a> InstructionTranslator<'a> {
         blk
     }
 
-    fn memset(&self, loc: Value, val: Value) { unimplemented!() }
-    fn memread(&self, loc: Value) -> Value { unimplemented!() }
+    fn memset(&self, loc: Value, val: Value) {
+        unimplemented!()
+    }
+    fn memread(&self, loc: Value) -> Value {
+        unimplemented!()
+    }
 
-    fn play_sound(&self) { unimplemented!() }
-    fn sleep(&self) { unimplemented!() }
+    fn play_sound(&self) {
+        unimplemented!()
+    }
+    fn sleep(&self) {
+        unimplemented!()
+    }
 
     pub fn dec_delay_timer(&mut self) {
         let one = self.builder.ins().iconst(self.byte, 1 as i64);
@@ -427,16 +444,11 @@ impl<'a> InstructionTranslator<'a> {
         assert_eq!(res.len(), 0);
     }
 
-    pub fn translate_instruction(
-        &mut self,
-        instructions: &mut Vec<InstructionReference>,
-    ) {
-
+    pub fn translate_instruction(&mut self, instructions: &mut Vec<InstructionReference>) {
         while let Some(ins) = instructions.pop() {
-
             self.builder.set_srcloc(SourceLoc::new(ins.pos as u32));
 
-           //self.dump_state(ins.pos);
+            //self.dump_state(ins.pos);
 
             //self.dec_timers();
 
@@ -482,10 +494,10 @@ impl<'a> InstructionTranslator<'a> {
 
                     let new_value = self.builder.ins().isub(dest_value, b_value);
 
-                    let borrow = self
-                        .builder
-                        .ins()
-                        .icmp(IntCC::UnsignedLessThan, dest_value, b_value);
+                    let borrow =
+                        self.builder
+                            .ins()
+                            .icmp(IntCC::UnsignedLessThan, dest_value, b_value);
 
                     // Convert the borrow flag into a byte, 0 if there is no overflow and a 1 if there is
                     let one = self.builder.ins().iconst(self.byte, 1 as i64);
@@ -507,7 +519,11 @@ impl<'a> InstructionTranslator<'a> {
                     unimplemented!()
                 }
                 Instruction::Jmp { address } => {
-                    let (_, blk) = self.blocks.iter().find(|(bpc, blk)| *bpc == address).expect("No target block for jmp");
+                    let (_, blk) = self
+                        .blocks
+                        .iter()
+                        .find(|(bpc, blk)| *bpc == address)
+                        .expect("No target block for jmp");
                     self.builder.ins().jump(*blk, &[]);
                     let new_blk = self.new_block_for_pc(ins.pos);
                     self.builder.switch_to_block(new_blk);
@@ -799,78 +815,78 @@ impl<'a> InstructionTranslator<'a> {
 
                 Instruction::IfKeyEq { comp } => {
                     /*let true_block = self.builder.create_block();
-                let false_block = self.builder.create_block();
+                    let false_block = self.builder.create_block();
 
-                let key_id_val = self.get_register(comp);
-                let is_pressed = self.is_key_pressed(key_id_val);
-                let one = self.builder.ins().iconst(self.byte, 1 as i64);
+                    let key_id_val = self.get_register(comp);
+                    let is_pressed = self.is_key_pressed(key_id_val);
+                    let one = self.builder.ins().iconst(self.byte, 1 as i64);
 
-                // If we are true then go to the true block
-                let cmp = self.builder.ins().icmp(IntCC::Equal, is_pressed, one);
+                    // If we are true then go to the true block
+                    let cmp = self.builder.ins().icmp(IntCC::Equal, is_pressed, one);
 
-                // If we are true then go to the true block
-                self.builder.ins().brz(cmp, true_block, &[]); // Otherwise skip it and go to the true block
-                self.builder.ins().jump(false_block, &[]);
+                    // If we are true then go to the true block
+                    self.builder.ins().brz(cmp, true_block, &[]); // Otherwise skip it and go to the true block
+                    self.builder.ins().jump(false_block, &[]);
 
-                self.builder.switch_to_block(true_block);
-                self.translate_instruction(
-                    Emu::read_instruction(pc + 2, &self.memory).unwrap(),
-                    pc + 2,
-                    blocks,
-                    callsub_placeholder,
-                );
-                self.builder.ins().jump(false_block, &[]);
+                    self.builder.switch_to_block(true_block);
+                    self.translate_instruction(
+                        Emu::read_instruction(pc + 2, &self.memory).unwrap(),
+                        pc + 2,
+                        blocks,
+                        callsub_placeholder,
+                    );
+                    self.builder.ins().jump(false_block, &[]);
 
-                self.builder.switch_to_block(false_block);
-                let mut new_address = pc + 4;
-                loop {
-                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if self.translate_instruction(ins, new_address, blocks, callsub_placeholder) {
+                    self.builder.switch_to_block(false_block);
+                    let mut new_address = pc + 4;
+                    loop {
+                        let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                        if self.translate_instruction(ins, new_address, blocks, callsub_placeholder) {
+                            new_address += 2;
+                            break;
+                        }
                         new_address += 2;
-                        break;
                     }
-                    new_address += 2;
-                }
 
-                return true;*/
+                    return true;*/
                     unimplemented!()
                 }
                 Instruction::IfKeyNeq { comp } => {
                     /*let true_block = self.builder.create_block();
-                let false_block = self.builder.create_block();
+                    let false_block = self.builder.create_block();
 
-                let key_id_val = self.get_register(comp);
-                let is_pressed = self.is_key_pressed(key_id_val);
-                let one = self.builder.ins().iconst(self.byte, 1 as i64);
+                    let key_id_val = self.get_register(comp);
+                    let is_pressed = self.is_key_pressed(key_id_val);
+                    let one = self.builder.ins().iconst(self.byte, 1 as i64);
 
-                // If we are true then go to the true block
-                let cmp = self.builder.ins().icmp(IntCC::NotEqual, is_pressed, one);
+                    // If we are true then go to the true block
+                    let cmp = self.builder.ins().icmp(IntCC::NotEqual, is_pressed, one);
 
-                // If we are true then go to the true block
-                self.builder.ins().brz(cmp, true_block, &[]); // Otherwise skip it and go to the true block
-                self.builder.ins().jump(false_block, &[]);
+                    // If we are true then go to the true block
+                    self.builder.ins().brz(cmp, true_block, &[]); // Otherwise skip it and go to the true block
+                    self.builder.ins().jump(false_block, &[]);
 
-                self.builder.switch_to_block(true_block);
-                self.translate_instruction(
-                    Emu::read_instruction(pc + 2, &self.memory).unwrap(),
-                    pc + 2,
-                    blocks,
-                    callsub_placeholder,
-                );
-                self.builder.ins().jump(false_block, &[]);
+                    self.builder.switch_to_block(true_block);
+                    self.translate_instruction(
+                        Emu::read_instruction(pc + 2, &self.memory).unwrap(),
+                        pc + 2,
+                        blocks,
+                        callsub_placeholder,
+                    );
+                    self.builder.ins().jump(false_block, &[]);
 
-                self.builder.switch_to_block(false_block);
-                let mut new_address = pc + 4;
-                loop {
-                    let ins = Emu::read_instruction(new_address, self.memory).unwrap();
-                    if self.translate_instruction(ins, new_address, blocks, callsub_placeholder) {
+                    self.builder.switch_to_block(false_block);
+                    let mut new_address = pc + 4;
+                    loop {
+                        let ins = Emu::read_instruction(new_address, self.memory).unwrap();
+                        if self.translate_instruction(ins, new_address, blocks, callsub_placeholder) {
+                            new_address += 2;
+                            break;
+                        }
                         new_address += 2;
-                        break;
                     }
-                    new_address += 2;
-                }
 
-                return true;*/
+                    return true;*/
                     unimplemented!()
                 }
                 Instruction::IncrementPc { .. } => {

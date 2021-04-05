@@ -1,10 +1,10 @@
-use crate::jit::{JIT, NativeFunction};
 use crate::graph::GraphManager;
-use std::fs::File;
-use std::time::{Duration, Instant};
-use std::slice::SliceIndex;
-use std::ops::{Index, IndexMut};
+use crate::jit::{NativeFunction, JIT};
 use std::collections::HashMap;
+use std::fs::File;
+use std::ops::{Index, IndexMut};
+use std::slice::SliceIndex;
+use std::time::{Duration, Instant};
 
 const CHIP8_DEFAULT_FONT: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -339,7 +339,7 @@ pub struct InstructionReference {
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct Block {
     ops: Vec<InstructionReference>,
-    native_func: Option<NativeFunction>
+    native_func: Option<NativeFunction>,
 }
 
 impl Block {
@@ -359,7 +359,14 @@ impl Block {
     }
 
     fn can_be_jitted(&self) -> bool {
-        !self.ops.iter().any(|i| matches!(i.op, Instruction::DrawSprite { height, x, y }) || matches!(i.op, Instruction::GetDelay { dest}) || matches!(i.op, Instruction::IfKeyNeq { comp} | Instruction::IfKeyEq { comp}))
+        !self.ops.iter().any(|i| {
+            matches!(i.op, Instruction::DrawSprite { height, x, y })
+                || matches!(i.op, Instruction::GetDelay { dest })
+                || matches!(
+                    i.op,
+                    Instruction::IfKeyNeq { comp } | Instruction::IfKeyEq { comp }
+                )
+        })
     }
 
     /// Detect if a block is a full loop from start to finish, if so this is a jit candidate
@@ -387,36 +394,28 @@ impl Block {
     fn find_loop(&self) -> Option<(usize, usize)> {
         for (pos, i) in self.ops.iter().enumerate() {
             match i.op {
-                Instruction::IfEq { a: _, b: _} => {
-                    match self.ops.iter().nth(pos + 1) {
-                        Some(i2) => {
-                            match i2.op {
-                                Instruction::Jmp { address } => {
-                                    if let Some(end) = self.ops.iter().position(|i3| i3.pos == address) {
-                                        return Some((end, pos + 1));
-                                    }
-                                }
-                                _ => {}
+                Instruction::IfEq { a: _, b: _ } => match self.ops.iter().nth(pos + 1) {
+                    Some(i2) => match i2.op {
+                        Instruction::Jmp { address } => {
+                            if let Some(end) = self.ops.iter().position(|i3| i3.pos == address) {
+                                return Some((end, pos + 1));
                             }
                         }
                         _ => {}
-                    }
-                }
-                Instruction::IfNeq { a: _, b: _} => {
-                    match self.ops.iter().nth(pos + 1) {
-                        Some(i2) => {
-                            match i2.op {
-                                Instruction::Jmp { address } => {
-                                    if let Some(end) = self.ops.iter().position(|i3| i3.pos == address) {
-                                        return Some((pos, end));
-                                    }
-                                }
-                                _ => {}
+                    },
+                    _ => {}
+                },
+                Instruction::IfNeq { a: _, b: _ } => match self.ops.iter().nth(pos + 1) {
+                    Some(i2) => match i2.op {
+                        Instruction::Jmp { address } => {
+                            if let Some(end) = self.ops.iter().position(|i3| i3.pos == address) {
+                                return Some((pos, end));
                             }
                         }
                         _ => {}
-                    }
-                }
+                    },
+                    _ => {}
+                },
                 Instruction::Jmp { address } => {
                     if let Some(end) = self.ops.iter().position(|i3| i3.pos == address) {
                         return Some((pos, end));
@@ -432,12 +431,12 @@ impl Block {
     fn cleave(&mut self, range: (usize, usize)) -> Block {
         let mut newblk = Block::empty();
 
-        for i in range.0..range.1+1 {
+        for i in range.0..range.1 + 1 {
             let i = *self.ops.get(i).unwrap();
             newblk.ops.push(i);
         }
 
-        for i in range.0..range.1+1 {
+        for i in range.0..range.1 + 1 {
             self.ops.remove(range.0);
         }
 
@@ -451,14 +450,14 @@ impl Block {
 
 struct LoopFinder {
     possible_loops: Vec<Block>,
-    jitted: HashMap<u16, NativeFunction>
+    jitted: HashMap<u16, NativeFunction>,
 }
 
 impl LoopFinder {
     fn new() -> Self {
         Self {
             possible_loops: vec![Block::empty()],
-            jitted: HashMap::new()
+            jitted: HashMap::new(),
         }
     }
 
@@ -479,7 +478,7 @@ impl LoopFinder {
                 blk.ops.push(i);
                 self.break_loops();
             } else {
-               // println!("Block complete {:?}, isloop: {}", blk, blk.contains_loop());
+                // println!("Block complete {:?}, isloop: {}", blk, blk.contains_loop());
                 self.possible_loops.push(Block::empty());
             }
         }
@@ -512,8 +511,6 @@ impl LoopFinder {
 
         self.possible_loops = new_possible_loops;
 
-
-
         //self.dump_loops();
     }
 
@@ -530,8 +527,12 @@ impl LoopFinder {
         //self.dump_loops();
 
         for blk in self.possible_loops.iter_mut() {
-            if blk.is_loop() && blk.can_be_jitted() && self.jitted.get(&blk.ops.first().unwrap().pos).is_none() {
-                self.jitted.insert(blk.ops.first().unwrap().pos, blk.compile(jit));
+            if blk.is_loop()
+                && blk.can_be_jitted()
+                && self.jitted.get(&blk.ops.first().unwrap().pos).is_none()
+            {
+                self.jitted
+                    .insert(blk.ops.first().unwrap().pos, blk.compile(jit));
             }
         }
     }
@@ -566,7 +567,7 @@ impl Memory {
             data: initial_memory,
             loop_finder: LoopFinder::new(),
             jit: JIT::default(),
-            jit_enabled: true
+            jit_enabled: true,
         }
     }
 
@@ -585,22 +586,17 @@ impl Memory {
     pub fn read_instruction(&mut self, pc: u16) -> Option<InstructionExecution> {
         if self.jit_enabled {
             if let Some(nf) = self.loop_finder.has_jitted(pc) {
-                return Some(InstructionExecution::Native(nf))
+                return Some(InstructionExecution::Native(nf));
             }
         }
 
-        if let (Some(a), Some(b)) = (
-            self.get(pc),
-            self.get(pc + 1),
-        ) {
+        if let (Some(a), Some(b)) = (self.get(pc), self.get(pc + 1)) {
             let ins = (*a as u16) << 8 | (*b as u16);
             let i = Instruction::from(ins);
 
             if self.jit_enabled {
-                self.loop_finder.trace(InstructionReference {
-                    pos: pc,
-                    op: i
-                });
+                self.loop_finder
+                    .trace(InstructionReference { pos: pc, op: i });
 
                 self.loop_finder.compile_loops(&mut self.jit);
             }
@@ -740,7 +736,10 @@ impl Emu {
     }
 
     pub fn run_instruction(&mut self) {
-        let instruction = self.memory.read_instruction(self.program_counter).expect("Unable to read instruction");
+        let instruction = self
+            .memory
+            .read_instruction(self.program_counter)
+            .expect("Unable to read instruction");
         self.program_counter += 2;
 
         match instruction {

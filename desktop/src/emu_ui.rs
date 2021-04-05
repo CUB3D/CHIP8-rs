@@ -76,7 +76,7 @@ impl EmuUi {
 
         Window::new(im_str!("Display")).build(ui, || {
             if jit {
-//                let mut r = emu::cl_emu::SCREEN_BUFFER.lock().unwrap();
+                //                let mut r = emu::cl_emu::SCREEN_BUFFER.lock().unwrap();
 
                 // for y in 0..SCREEN_HEIGHT {
                 //     let text: String = (0..SCREEN_WIDTH)

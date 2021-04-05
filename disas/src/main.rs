@@ -15,7 +15,7 @@ fn main() {
     while let Some(i) = e.memory.read_instruction(pc) {
         let i = match i {
             InstructionExecution::Emulated(i) => i,
-            InstructionExecution::Native(_) => unimplemented!()
+            InstructionExecution::Native(_) => unimplemented!(),
         };
         if i == (Instruction::CallRCA { address: 0 }) {
             return;
