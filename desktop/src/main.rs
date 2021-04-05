@@ -12,28 +12,28 @@ pub mod ui;
 
 const ROM_DIR: Dir = include_dir!("rom");
 
-fn run_jit_emu() {
-    let system = init(file!());
-
-    let x = std::thread::spawn(|| {
-        let mut e = Emu::new();
-        e.load_rom(include_bytes!("../../desktop/rom/snake.ch8"));
-        e.jit.call_function_direct(512, &e.memory);
-    });
-
-    let mut emu = Emu::new();
-    let mut emu_ui = EmuUi::default();
-
-    system.main_loop(move |_, ui| {
-        let keys = ui.io().keys_down;
-
-        *emu::cl_emu::KEYS.lock().unwrap() = emu.keys;
-
-        emu_ui.draw(ui, &mut emu, true);
-    });
-
-    x.join();
-}
+// fn run_jit_emu() {
+//     let system = init(file!());
+//
+//     let x = std::thread::spawn(|| {
+//         let mut e = Emu::new();
+//         e.load_rom(include_bytes!("../../desktop/rom/15PUZZLE"));
+//         e.jit.call_function_direct(512, &e.memory.inner());
+//     });
+//
+//     let mut emu = Emu::new();
+//     let mut emu_ui = EmuUi::default();
+//
+//     system.main_loop(move |_, ui| {
+//         let keys = ui.io().keys_down;
+//
+//         *emu::cl_emu::KEYS.lock().unwrap() = emu.keys;
+//
+//         emu_ui.draw(ui, &mut emu, true);
+//     });
+//
+//     x.join();
+// }
 
 fn run_base_emu() {
     let system = init(file!());
@@ -42,6 +42,7 @@ fn run_base_emu() {
     let sound_bytes = include_bytes!("../beep.wav");
 
     let mut emu = Emu::new();
+    emu.memory.jit_enabled = false;
     let mut emu_ui = EmuUi::default();
 
     let mut tick_timer = Instant::now();
@@ -54,7 +55,7 @@ fn run_base_emu() {
             .contents(),
     );
 
-    emu.load_rom(include_bytes!("../../desktop/rom/snake.ch8"));
+    emu.load_rom(include_bytes!("../../desktop/rom/test_loop.ch8"));
 
     system.main_loop(move |_, ui| {
         let keys = ui.io().keys_down;
@@ -77,12 +78,12 @@ fn run_base_emu() {
             keys[VirtualKeyCode::V as usize],
         ];
 
-        *emu::cl_emu::KEYS.lock().unwrap() = emu.keys;
+        // *emu::cl_emu::KEYS.lock().unwrap() = emu.keys;
 
         emu_ui.draw(ui, &mut emu, false);
 
         let can_run =
-            tick_timer.elapsed() > Duration::from_millis(1000 / 500) && emu_ui.run_step(&emu);
+            tick_timer.elapsed() > Duration::from_millis(1000 / 200) && emu_ui.run_step(&emu);
         if can_run {
             tick_timer = Instant::now();
             emu.tick();
@@ -97,11 +98,15 @@ fn run_base_emu() {
             emu = Emu::new();
             emu.load_rom(&data);
         }
+
+        if emu.halted {
+            std::process::exit(0);
+        }
     });
 }
 
 fn main() {
-    // run_base_emu();
+    run_base_emu();
     // run_jit_emu();
-    emu::treegen::mk_tree();
+    // emu::treegen::mk_tree();
 }

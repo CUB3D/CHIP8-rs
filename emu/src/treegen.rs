@@ -1,8 +1,8 @@
+/*use crate::emu::{Emu, Instruction};
 use crate::graph::{GraphManager, Node};
-use crate::emu::{Emu, Instruction};
+use std::collections::HashMap;
 use std::fs::File;
 use std::process::exit;
-use std::collections::HashMap;
 
 pub fn mk_tree() {
     let mut emu = Emu::new();
@@ -39,24 +39,29 @@ pub fn mk_tree() {
             id: gm.next_node_id(),
             i: i.clone(),
             display_name: format!("{} - {:?} ({})", pc, i, postfix),
-            name: format!("{} - {:?}", pc, i)
+            name: format!("{} - {:?}", pc, i),
         });
         let requester_node = *pc_to_node.get(&_requester_pc).unwrap();
         gm.link2(requester_node, n.id);
         pc_to_node.insert(pc, n.id);
 
         match i {
-            Instruction::IfNeq { ..} | Instruction::IfRegisterNeq {..} | Instruction::IfKeyNeq {..} | Instruction::IfEq { ..} | Instruction::IfRegisterEq {..} | Instruction::IfKeyEq {..} => {
+            Instruction::IfNeq { .. }
+            | Instruction::IfRegisterNeq { .. }
+            | Instruction::IfKeyNeq { .. }
+            | Instruction::IfEq { .. }
+            | Instruction::IfRegisterEq { .. }
+            | Instruction::IfKeyEq { .. } => {
                 // The false instruction will visit the true instruction to resume the flow (unless if a jmp)
                 if let Some(i) = Emu::read_instruction(pc + 2, &emu.memory) {
-                    if !matches!(i, Instruction::Jmp { ..}) {
-                        unvisited.push((pc + 2, pc + 4,  "TRUE".to_string()));
+                    if !matches!(i, Instruction::Jmp { .. }) {
+                        unvisited.push((pc + 2, pc + 4, "TRUE".to_string()));
                     }
                 }
 
                 // Visit the false and true instructions
-                unvisited.push((pc, pc + 2,  "FALSE".to_string()));
-                unvisited.push((pc, pc + 4,"TRUE".to_string()));
+                unvisited.push((pc, pc + 2, "FALSE".to_string()));
+                unvisited.push((pc, pc + 4, "TRUE".to_string()));
             }
             Instruction::Jmp { address } => {
                 unvisited.push((pc, address, "JMP".to_string()));
@@ -79,3 +84,4 @@ pub fn mk_tree() {
     let mut f = File::create("example-tree.dot").unwrap();
     gm.render(&mut f);
 }
+*/

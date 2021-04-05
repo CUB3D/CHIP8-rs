@@ -1,7 +1,10 @@
-use crate::cl_emu::JIT;
+use crate::jit::{JIT, NativeFunction};
 use crate::graph::GraphManager;
 use std::fs::File;
 use std::time::{Duration, Instant};
+use std::slice::SliceIndex;
+use std::ops::{Index, IndexMut};
+use std::collections::HashMap;
 
 const CHIP8_DEFAULT_FONT: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -327,6 +330,310 @@ pub trait PlatformBackend {
     fn is_key_pressed(&self, key: u8) -> bool;
 }
 
+#[derive(Debug, Copy, Clone, PartialOrd, Eq, PartialEq)]
+pub struct InstructionReference {
+    pub op: Instruction,
+    pub pos: u16,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct Block {
+    ops: Vec<InstructionReference>,
+    native_func: Option<NativeFunction>
+}
+
+impl Block {
+    fn empty() -> Self {
+        Self {
+            ops: Vec::new(),
+            native_func: None,
+        }
+    }
+
+    fn compile(&mut self, jit: &mut JIT) -> NativeFunction {
+        if self.native_func.is_none() {
+            self.native_func = Some(jit.compile_native(self.ops.clone()));
+        }
+
+        self.native_func.unwrap()
+    }
+
+    fn can_be_jitted(&self) -> bool {
+        !self.ops.iter().any(|i| matches!(i.op, Instruction::DrawSprite { height, x, y }) || matches!(i.op, Instruction::GetDelay { dest}) || matches!(i.op, Instruction::IfKeyNeq { comp} | Instruction::IfKeyEq { comp}))
+    }
+
+    /// Detect if a block is a full loop from start to finish, if so this is a jit candidate
+    fn is_loop(&self) -> bool {
+        if self.ops.is_empty() {
+            return false;
+        }
+
+        let first = self.ops.first().unwrap();
+        let last = self.ops.last().unwrap();
+
+        match last.op {
+            Instruction::Jmp { address } => {
+                if address == first.pos {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+
+        false
+    }
+
+    /// Find a loop from start to end, format is Option<(start, end)>, None if no loops exist
+    fn find_loop(&self) -> Option<(usize, usize)> {
+        for (pos, i) in self.ops.iter().enumerate() {
+            match i.op {
+                Instruction::IfEq { a: _, b: _} => {
+                    match self.ops.iter().nth(pos + 1) {
+                        Some(i2) => {
+                            match i2.op {
+                                Instruction::Jmp { address } => {
+                                    if let Some(end) = self.ops.iter().position(|i3| i3.pos == address) {
+                                        return Some((end, pos + 1));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Instruction::IfNeq { a: _, b: _} => {
+                    match self.ops.iter().nth(pos + 1) {
+                        Some(i2) => {
+                            match i2.op {
+                                Instruction::Jmp { address } => {
+                                    if let Some(end) = self.ops.iter().position(|i3| i3.pos == address) {
+                                        return Some((pos, end));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Instruction::Jmp { address } => {
+                    if let Some(end) = self.ops.iter().position(|i3| i3.pos == address) {
+                        return Some((pos, end));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
+    fn cleave(&mut self, range: (usize, usize)) -> Block {
+        let mut newblk = Block::empty();
+
+        for i in range.0..range.1+1 {
+            let i = *self.ops.get(i).unwrap();
+            newblk.ops.push(i);
+        }
+
+        for i in range.0..range.1+1 {
+            self.ops.remove(range.0);
+        }
+
+        newblk
+    }
+
+    fn contains_loop(&self) -> bool {
+        self.find_loop().is_some()
+    }
+}
+
+struct LoopFinder {
+    possible_loops: Vec<Block>,
+    jitted: HashMap<u16, NativeFunction>
+}
+
+impl LoopFinder {
+    fn new() -> Self {
+        Self {
+            possible_loops: vec![Block::empty()],
+            jitted: HashMap::new()
+        }
+    }
+
+    fn trace(&mut self, i: InstructionReference) {
+        //println!("{:?}", i);
+        // Have we seen this ir before
+        if self.possible_loops.iter().any(|pl| pl.ops.contains(&i)) {
+            return;
+        }
+
+        let blk = self.possible_loops.last_mut().unwrap();
+
+        if blk.ops.is_empty() {
+            blk.ops.push(i);
+        } else {
+            let lst = blk.ops.last().unwrap();
+            if i.pos == lst.pos + 2 {
+                blk.ops.push(i);
+                self.break_loops();
+            } else {
+               // println!("Block complete {:?}, isloop: {}", blk, blk.contains_loop());
+                self.possible_loops.push(Block::empty());
+            }
+        }
+    }
+
+    /// Takes all the possible loops found so far, extracts full loops from them and throws away non loops
+    /// Keeps the last block as that one is still being built (otherwise it would be thrown away every time)
+    fn break_loops(&mut self) {
+        let mut new_possible_loops = Vec::new();
+        let last = self.possible_loops.last().cloned();
+
+        for blk in self.possible_loops.iter_mut() {
+            if !blk.is_loop() {
+                if let Some((start, end)) = blk.find_loop() {
+                    //TODO: this will throw away the bits outside, should we keep them
+                    let lop = blk.cleave((start, end));
+                    assert_eq!(lop.is_loop(), true, "The bit we removed must be a loop");
+                    new_possible_loops.push(lop);
+                } else {
+                    // If it has no loops, then keep the last block as its not done being built yet
+                    if Some(blk.clone()) == last {
+                        new_possible_loops.push(blk.clone());
+                    }
+                }
+            } else {
+                // Keep old loops
+                new_possible_loops.push(blk.clone());
+            }
+        }
+
+        self.possible_loops = new_possible_loops;
+
+
+
+        //self.dump_loops();
+    }
+
+    fn dump_loops(&self) {
+        for blk in self.possible_loops.iter() {
+            if blk.is_loop() {
+                println!("{:?}", blk);
+            }
+        }
+        println!("--------");
+    }
+
+    fn compile_loops(&mut self, jit: &mut JIT) {
+        //self.dump_loops();
+
+        for blk in self.possible_loops.iter_mut() {
+            if blk.is_loop() && blk.can_be_jitted() && self.jitted.get(&blk.ops.first().unwrap().pos).is_none() {
+                self.jitted.insert(blk.ops.first().unwrap().pos, blk.compile(jit));
+            }
+        }
+    }
+
+    fn has_jitted(&mut self, pc: u16) -> Option<NativeFunction> {
+        self.jitted.get(&pc).cloned()
+    }
+}
+
+pub enum InstructionExecution {
+    Emulated(Instruction),
+    Native(NativeFunction),
+}
+
+pub struct Memory {
+    data: [u8; MEMORY_SIZE],
+    loop_finder: LoopFinder,
+    jit: JIT,
+    pub jit_enabled: bool,
+}
+
+impl Memory {
+    fn new() -> Self {
+        let mut initial_memory = [0; MEMORY_SIZE];
+        // copy the font into mem
+        let font_base = 432;
+        for i in 0..CHIP8_DEFAULT_FONT.len() {
+            initial_memory[font_base + i] = CHIP8_DEFAULT_FONT[i];
+        }
+
+        Self {
+            data: initial_memory,
+            loop_finder: LoopFinder::new(),
+            jit: JIT::default(),
+            jit_enabled: true
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn inner(&self) -> [u8; MEMORY_SIZE] {
+        self.data
+    }
+
+    fn get(&self, index: u16) -> Option<&u8> {
+        self.data.get(index as usize)
+    }
+
+    pub fn read_instruction(&mut self, pc: u16) -> Option<InstructionExecution> {
+        if self.jit_enabled {
+            if let Some(nf) = self.loop_finder.has_jitted(pc) {
+                return Some(InstructionExecution::Native(nf))
+            }
+        }
+
+        if let (Some(a), Some(b)) = (
+            self.get(pc),
+            self.get(pc + 1),
+        ) {
+            let ins = (*a as u16) << 8 | (*b as u16);
+            let i = Instruction::from(ins);
+
+            if self.jit_enabled {
+                self.loop_finder.trace(InstructionReference {
+                    pos: pc,
+                    op: i
+                });
+
+                self.loop_finder.compile_loops(&mut self.jit);
+            }
+
+            Some(InstructionExecution::Emulated(i))
+        } else {
+            None
+        }
+    }
+}
+
+impl Index<u16> for Memory {
+    type Output = u8;
+
+    fn index(&self, index: u16) -> &Self::Output {
+        &self.data[index as usize]
+    }
+}
+
+impl Index<usize> for Memory {
+    type Output = u8;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.data[index]
+    }
+}
+
+impl IndexMut<usize> for Memory {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.data[index]
+    }
+}
+
 pub const SCREEN_HEIGHT: usize = 32;
 pub const SCREEN_WIDTH: usize = 64;
 pub const MEMORY_SIZE: usize = 4096;
@@ -334,7 +641,7 @@ pub const MEMORY_SIZE: usize = 4096;
 pub struct Emu {
     pub address_register: usize,
     pub program_counter: u16,
-    pub memory: [u8; MEMORY_SIZE],
+    pub memory: Memory,
     pub registers: [u8; 16],
     pub stack: Vec<u16>,
     pub delay_timer: u8,
@@ -359,7 +666,7 @@ impl Emu {
         Self {
             program_counter: 0x200,
             address_register: 0,
-            memory: Emu::initial_memory(),
+            memory: Memory::new(),
             registers: [0; 16],
             stack: Vec::new(),
             delay_timer: 0,
@@ -376,16 +683,6 @@ impl Emu {
         }
     }
 
-    fn initial_memory() -> [u8; 4096] {
-        let mut initial_memory = [0; MEMORY_SIZE];
-        // copy the font into mem
-        let font_base = 432;
-        for i in 0..CHIP8_DEFAULT_FONT.len() {
-            initial_memory[font_base + i] = CHIP8_DEFAULT_FONT[i];
-        }
-        initial_memory
-    }
-
     pub fn reset(&mut self) {
         self.halted = false;
         self.instructions = 0;
@@ -397,7 +694,7 @@ impl Emu {
         self.delay_timer = 0;
         self.stack.clear();
         self.registers = [0; 16];
-        self.memory = Emu::initial_memory();
+        self.memory = Memory::new();
         self.address_register = 0;
         self.program_counter = 0x200;
         self.jit = JIT::default();
@@ -443,22 +740,16 @@ impl Emu {
     }
 
     pub fn run_instruction(&mut self) {
-        let instruction = Emu::read_instruction(self.program_counter, &self.memory)
-            .expect("Unable to read instruction");
+        let instruction = self.memory.read_instruction(self.program_counter).expect("Unable to read instruction");
         self.program_counter += 2;
 
-        let this = self
-            .graph
-            .add_node(format!("{} - {:?}", self.program_counter, instruction));
-        self.graph.link(&self.graph.parent(&this), &this);
+        match instruction {
+            InstructionExecution::Emulated(instruction) => self.execute_instruction(instruction),
+            InstructionExecution::Native(nf) => self.registers = nf.call(self.registers),
+        }
+    }
 
-        let mut f = File::create("example.dot").unwrap();
-        self.graph.render(&mut f);
-
-        // if self.debug {
-        // println!("Instruction: {:?}", instruction);
-        // }
-
+    pub fn execute_instruction(&mut self, instruction: Instruction) {
         match instruction {
             Instruction::SetRegister { register, value } => {
                 self.set_register(register, value as u8);
@@ -640,6 +931,7 @@ impl Emu {
                 self.program_counter += self.get_register(Register::V0) as u16 + offset;
             }
             Instruction::CallRCA { .. } => {
+                println!("CallRCA, halted");
                 self.halted = true;
             }
         }

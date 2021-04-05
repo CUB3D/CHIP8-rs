@@ -8,13 +8,13 @@ edition = "2018"
 
 [dependencies]
 rand = "0.8.3"
-cranelift = "0.69.0"
-cranelift-frontend = "0.69.0"
-cranelift-jit = "0.69.0"
-cranelift-module = "0.69.0"
+cranelift = "0.73.0"
+cranelift-frontend = "0.73.0"
+cranelift-jit = "0.73.0"
+cranelift-module = "0.73.0"
 
 lazy_static = "1.4.0"
-rodio = "0.13.0"
+rodio = "0.13.1"
 dot = "0.1.4"
 
 [[bench]]

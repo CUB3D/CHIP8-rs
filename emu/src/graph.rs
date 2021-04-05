@@ -1,6 +1,6 @@
+use crate::emu::Instruction;
 use std::collections::HashSet;
 use std::io::Write;
-use crate::emu::Instruction;
 
 type Nd = usize;
 type Ed<'a> = &'a (usize, usize);
@@ -59,7 +59,7 @@ impl Default for GraphManager {
                 name: "Main".to_string(),
                 id: 0,
                 i: Instruction::Unknown,
-                display_name: "".to_string()
+                display_name: "".to_string(),
             }],
             edges: Vec::new(),
         }
@@ -85,7 +85,7 @@ impl GraphManager {
             name: t,
             display_name: "".to_string(),
             id: self.nodes.len(),
-            i: Instruction::Unknown
+            i: Instruction::Unknown,
         };
         self.nodes.push(n.clone());
         n
